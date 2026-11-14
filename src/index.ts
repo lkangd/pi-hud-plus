@@ -118,7 +118,7 @@ export default function piHud(pi: ExtensionAPI): void {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
       generation: ++generation,
-      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd },
+      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd, context: null, tools: [] },
       displaced: false,
     });
     const config = loadConfig(ctx.cwd, getAgentDir());

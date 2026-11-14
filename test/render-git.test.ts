@@ -7,11 +7,17 @@ import { DEFAULT_CONFIG, type HudConfig } from "../src/config.ts";
 import type { GitStatus } from "../src/git.ts";
 import type { HudSnapshot } from "../src/types.ts";
 
-const base: HudSnapshot = { model: null, cwd: "/tmp/my-project" };
+const base: HudSnapshot = { model: null, cwd: "/tmp/my-project", context: null, tools: [] };
 
-function line(git: GitStatus | null, gitStatus: Partial<HudConfig["gitStatus"]> = {}, display: Partial<HudConfig["display"]> = {}) {
+function line(
+  git: GitStatus | null,
+  gitStatus: Partial<HudConfig["gitStatus"]> = {},
+  display: Partial<HudConfig["display"]> = {},
+  lineLayout: HudConfig["lineLayout"] = "expanded",
+) {
   const config: HudConfig = {
     ...DEFAULT_CONFIG,
+    lineLayout,
     gitStatus: { ...DEFAULT_CONFIG.gitStatus, ...gitStatus },
     display: { ...DEFAULT_CONFIG.display, ...display },
   };
@@ -54,6 +60,19 @@ test("colors the ahead count at the push warning and critical thresholds", () =>
   assert.ok(line({ ...main, ahead: 12 }, thresholds).includes("\x1b[33m↑12\x1b[0m"), "ahead count should use warning color");
   assert.ok(line({ ...main, ahead: 25 }, thresholds).includes("\x1b[31m↑25\x1b[0m"), "ahead count should use critical color");
   assert.ok(line({ ...main, ahead: 25 }, { showAheadBehind: true }).includes("\x1b[36m↑25\x1b[0m"), "0 thresholds are off");
+});
+
+test("the compact Line shows git inline with Starship-style file stats", () => {
+  const git: GitStatus = {
+    branch: "feature",
+    isDirty: true,
+    ahead: 2,
+    behind: 1,
+    fileStats: { modified: 3, added: 1, deleted: 1, untracked: 2, trackedFiles: [] },
+  };
+  assert.equal(strip(line(git, {}, {}, "compact")), "my-project git:(feature*)");
+  assert.equal(strip(line(git, { showAheadBehind: true, showFileStats: true }, {}, "compact")), "my-project git:(feature* ↑2 ↓1 !3 +1 ✘1 ?2)");
+  assert.equal(strip(line(git, { branchOverflow: "wrap", showDirty: false }, {}, "compact")), "my-project | git:(feature)");
 });
 
 test("strips control characters from the branch", () => {
