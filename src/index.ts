@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG } from "./config.ts";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadConfig } from "./config.ts";
 import { renderHud } from "./render/index.ts";
 import type { HudSnapshot } from "./types.ts";
 
@@ -27,7 +27,7 @@ export default function piHud(pi: ExtensionAPI): void {
       generation: ++generation,
       snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd },
     });
-    const config = DEFAULT_CONFIG;
+    const config = loadConfig(ctx.cwd, getAgentDir());
     ctx.ui.setFooter((tui) => {
       current.requestRender = () => tui.requestRender();
       return {

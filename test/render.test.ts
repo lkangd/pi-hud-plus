@@ -30,6 +30,14 @@ test("returns no Lines for a non-positive width", () => {
 });
 
 test("colours the model with the configured override", () => {
-  const [line] = renderHud(snapshot, { ...DEFAULT_CONFIG, colors: { model: "#ff0000" } }, 80);
+  const [line] = renderHud(snapshot, { ...DEFAULT_CONFIG, colors: { ...DEFAULT_CONFIG.colors, model: "#ff0000" } }, 80);
   assert.ok(line.startsWith("\x1b[38;2;255;0;0m[Claude Opus 4.6]"), JSON.stringify(line));
+});
+
+test("display.showModel and display.showProject hide their parts", () => {
+  const withDisplay = (display: object) =>
+    renderHud(snapshot, { ...DEFAULT_CONFIG, display: { ...DEFAULT_CONFIG.display, ...display } }, 80).map(strip);
+  assert.deepEqual(withDisplay({ showModel: false }), ["my-project"]);
+  assert.deepEqual(withDisplay({ showProject: false }), ["[Claude Opus 4.6]"]);
+  assert.deepEqual(withDisplay({ showModel: false, showProject: false }), []);
 });

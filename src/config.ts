@@ -1,4 +1,22 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { Language } from "./i18n/types.ts";
+
+export type LineLayoutType = "compact" | "expanded";
+export type ContextValueMode = "percent" | "tokens" | "remaining" | "both";
+export type GitBranchOverflowMode = "truncate" | "wrap";
+
+/**
+ * Controls how the model name is displayed in the HUD badge.
+ *
+ *   full:    Show the raw display name as-is (e.g. "Opus 4.6 (1M context)")
+ *   compact: Strip redundant context-window suffix (e.g. "Opus 4.6")
+ *   short:   Strip context suffix AND "Claude " prefix (e.g. "Opus 4.6")
+ */
+export type ModelFormatMode = "full" | "compact" | "short";
+export type TimeFormatMode = "relative" | "absolute" | "both" | "elapsed" | "elapsedAndAbsolute";
+export type CustomLinePosition = "first" | "last";
+export type HudElement = "project" | "context" | "promptCache" | "memory" | "environment" | "tools" | "sessionTime";
 
 export type HudColorName =
   | "dim"
@@ -27,13 +45,334 @@ export interface HudColorOverrides {
   barEmpty: string;
 }
 
-// shortcut: only the fields the tracer-bullet HUD reads; the config ticket ports claude-hud's full HudConfig, merge and validation.
+export const DEFAULT_ELEMENT_ORDER: HudElement[] = [
+  "project",
+  "context",
+  "promptCache",
+  "memory",
+  "environment",
+  "tools",
+  "sessionTime",
+];
+
+const KNOWN_ELEMENTS = new Set<HudElement>(DEFAULT_ELEMENT_ORDER);
+
 export interface HudConfig {
   language: Language;
-  colors: Partial<HudColorOverrides>;
+  lineLayout: LineLayoutType;
+  showSeparators: boolean;
+  pathLevels: 1 | 2 | 3;
+  elementOrder: HudElement[];
+  /** Shell command whose output is shown as an Extra command Line. "" = off. Ignored in the project file. */
+  extraCommand: string;
+  gitStatus: {
+    enabled: boolean;
+    showDirty: boolean;
+    showAheadBehind: boolean;
+    showFileStats: boolean;
+    branchOverflow: GitBranchOverflowMode;
+    pushWarningThreshold: number;
+    pushCriticalThreshold: number;
+  };
+  display: {
+    showModel: boolean;
+    showProject: boolean;
+    showContextBar: boolean;
+    contextValue: ContextValueMode;
+    showConfigCounts: boolean;
+    showCost: boolean;
+    showDuration: boolean;
+    showSpeed: boolean;
+    showTokenBreakdown: boolean;
+    showTools: boolean;
+    toolNameMaxLength: number;
+    toolsMaxVisible: number;
+    showSessionName: boolean;
+    showVersion: boolean;
+    showThinkingLevel: boolean;
+    showMemoryUsage: boolean;
+    showPromptCache: boolean;
+    promptCacheTtlSeconds: number;
+    showSessionTokens: boolean;
+    showSessionStartDate: boolean;
+    showLastResponseAt: boolean;
+    showExtensionStatuses: boolean;
+    mergeGroups: HudElement[][];
+    contextWarningThreshold: number;
+    contextCriticalThreshold: number;
+    environmentThreshold: number;
+    modelFormat: ModelFormatMode;
+    modelOverride: string;
+    customLine: string;
+    customLinePosition: CustomLinePosition;
+    timeFormat: TimeFormatMode;
+  };
+  colors: HudColorOverrides;
 }
 
 export const DEFAULT_CONFIG: HudConfig = {
   language: "en",
-  colors: {},
+  lineLayout: "expanded",
+  showSeparators: false,
+  pathLevels: 1,
+  elementOrder: [...DEFAULT_ELEMENT_ORDER],
+  extraCommand: "",
+  gitStatus: {
+    enabled: true,
+    showDirty: true,
+    showAheadBehind: false,
+    showFileStats: false,
+    branchOverflow: "truncate",
+    pushWarningThreshold: 0,
+    pushCriticalThreshold: 0,
+  },
+  display: {
+    showModel: true,
+    showProject: true,
+    showContextBar: true,
+    contextValue: "percent",
+    showConfigCounts: false,
+    showCost: false,
+    showDuration: false,
+    showSpeed: false,
+    showTokenBreakdown: true,
+    showTools: false,
+    toolNameMaxLength: 0,
+    toolsMaxVisible: 4,
+    showSessionName: false,
+    showVersion: false,
+    showThinkingLevel: false,
+    showMemoryUsage: false,
+    showPromptCache: false,
+    promptCacheTtlSeconds: 300,
+    showSessionTokens: false,
+    showSessionStartDate: false,
+    showLastResponseAt: false,
+    showExtensionStatuses: true,
+    mergeGroups: [],
+    contextWarningThreshold: 70,
+    contextCriticalThreshold: 85,
+    environmentThreshold: 0,
+    modelFormat: "full",
+    modelOverride: "",
+    customLine: "",
+    customLinePosition: "last",
+    timeFormat: "relative",
+  },
+  colors: {
+    context: "green",
+    warning: "yellow",
+    critical: "red",
+    model: "cyan",
+    project: "yellow",
+    git: "magenta",
+    gitBranch: "cyan",
+    label: "dim",
+    custom: 208,
+    barFilled: "█",
+    barEmpty: "░",
+  },
 };
+
+type Raw = Record<string, unknown>;
+
+function isObject(value: unknown): value is Raw {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function bool(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function oneOf<T>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+const COLOR_NAMES: readonly HudColorName[] = ["dim", "red", "green", "yellow", "magenta", "cyan", "brightBlue", "brightMagenta"];
+const UNSAFE_CODEPOINT = /[\p{Cc}\p{Cf}\p{Variation_Selector}\p{Zl}\p{Zp}\p{Cn}]/u;
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+
+function validateBarChar(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  if (Array.from(segmenter.segment(value)).length !== 1) return false;
+
+  for (const ch of value) {
+    if (UNSAFE_CODEPOINT.test(ch)) return false;
+  }
+  return true;
+}
+
+function validateColorValue(value: unknown): value is HudColorValue {
+  if (COLOR_NAMES.includes(value as HudColorName)) return true;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 255) return true;
+  return typeof value === "string" && HEX_COLOR_PATTERN.test(value);
+}
+
+function validateElementOrder(value: unknown): HudElement[] {
+  if (!Array.isArray(value)) return [...DEFAULT_ELEMENT_ORDER];
+  const elementOrder = [...new Set(value.filter((item): item is HudElement => KNOWN_ELEMENTS.has(item)))];
+  return elementOrder.length > 0 ? elementOrder : [...DEFAULT_ELEMENT_ORDER];
+}
+
+// claude-hud falls back to its default group when nothing valid survives; our default is [] so every invalid case is [].
+function validateMergeGroups(value: unknown): HudElement[][] {
+  if (!Array.isArray(value)) return [];
+
+  const usedElements = new Set<HudElement>();
+  const mergeGroups: HudElement[][] = [];
+
+  for (const group of value) {
+    if (!Array.isArray(group)) continue;
+    const normalizedGroup = [
+      ...new Set(group.filter((item): item is HudElement => KNOWN_ELEMENTS.has(item) && !usedElements.has(item))),
+    ];
+    if (normalizedGroup.length >= 2) {
+      normalizedGroup.forEach((element) => usedElements.add(element));
+      mergeGroups.push(normalizedGroup);
+    }
+  }
+
+  return mergeGroups;
+}
+
+function validateThreshold(value: unknown, max = 100): number {
+  if (typeof value !== "number") return 0;
+  return Math.max(0, Math.min(max, value));
+}
+
+function validateContextThreshold(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, value));
+}
+
+function validateCountThreshold(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function validateDurationSeconds(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return fallback;
+  return Math.floor(value);
+}
+
+function validateNonNegativeInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return fallback;
+  return value;
+}
+
+function truncatedString(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value.slice(0, 80) : fallback;
+}
+
+/** Validates a parsed user config field by field. Invalid values fall back to the field's default; unknown fields are dropped. */
+export function mergeConfig(userConfig: unknown): HudConfig {
+  const user = isObject(userConfig) ? userConfig : {};
+  const git = isObject(user.gitStatus) ? user.gitStatus : {};
+  const display = isObject(user.display) ? user.display : {};
+  const colors = isObject(user.colors) ? user.colors : {};
+  const D = DEFAULT_CONFIG;
+
+  const color = (key: Exclude<keyof HudColorOverrides, "barFilled" | "barEmpty">) =>
+    validateColorValue(colors[key]) ? colors[key] : D.colors[key];
+  const barChar = (key: "barFilled" | "barEmpty") => (validateBarChar(colors[key]) ? colors[key] : D.colors[key]);
+  const displayBool = (key: { [K in keyof HudConfig["display"]]: HudConfig["display"][K] extends boolean ? K : never }[keyof HudConfig["display"]]) =>
+    bool(display[key], D.display[key]);
+
+  return {
+    language: oneOf(user.language, ["en", "zh", "zh-Hans"] as const, D.language),
+    lineLayout: oneOf(user.lineLayout, ["compact", "expanded"] as const, D.lineLayout),
+    showSeparators: bool(user.showSeparators, D.showSeparators),
+    pathLevels: oneOf(user.pathLevels, [1, 2, 3] as const, D.pathLevels),
+    elementOrder: validateElementOrder(user.elementOrder),
+    extraCommand: typeof user.extraCommand === "string" ? user.extraCommand : D.extraCommand,
+    gitStatus: {
+      enabled: bool(git.enabled, D.gitStatus.enabled),
+      showDirty: bool(git.showDirty, D.gitStatus.showDirty),
+      showAheadBehind: bool(git.showAheadBehind, D.gitStatus.showAheadBehind),
+      showFileStats: bool(git.showFileStats, D.gitStatus.showFileStats),
+      branchOverflow: oneOf(git.branchOverflow, ["truncate", "wrap"] as const, D.gitStatus.branchOverflow),
+      pushWarningThreshold: validateCountThreshold(git.pushWarningThreshold),
+      pushCriticalThreshold: validateCountThreshold(git.pushCriticalThreshold),
+    },
+    display: {
+      showModel: displayBool("showModel"),
+      showProject: displayBool("showProject"),
+      showContextBar: displayBool("showContextBar"),
+      contextValue: oneOf(display.contextValue, ["percent", "tokens", "remaining", "both"] as const, D.display.contextValue),
+      showConfigCounts: displayBool("showConfigCounts"),
+      showCost: displayBool("showCost"),
+      showDuration: displayBool("showDuration"),
+      showSpeed: displayBool("showSpeed"),
+      showTokenBreakdown: displayBool("showTokenBreakdown"),
+      showTools: displayBool("showTools"),
+      toolNameMaxLength: validateNonNegativeInteger(display.toolNameMaxLength, D.display.toolNameMaxLength),
+      toolsMaxVisible: validateNonNegativeInteger(display.toolsMaxVisible, D.display.toolsMaxVisible),
+      showSessionName: displayBool("showSessionName"),
+      showVersion: displayBool("showVersion"),
+      showThinkingLevel: displayBool("showThinkingLevel"),
+      showMemoryUsage: displayBool("showMemoryUsage"),
+      showPromptCache: displayBool("showPromptCache"),
+      promptCacheTtlSeconds: validateDurationSeconds(display.promptCacheTtlSeconds, D.display.promptCacheTtlSeconds),
+      showSessionTokens: displayBool("showSessionTokens"),
+      showSessionStartDate: displayBool("showSessionStartDate"),
+      showLastResponseAt: displayBool("showLastResponseAt"),
+      showExtensionStatuses: displayBool("showExtensionStatuses"),
+      mergeGroups: validateMergeGroups(display.mergeGroups),
+      contextWarningThreshold: validateContextThreshold(display.contextWarningThreshold, D.display.contextWarningThreshold),
+      contextCriticalThreshold: validateContextThreshold(display.contextCriticalThreshold, D.display.contextCriticalThreshold),
+      environmentThreshold: validateThreshold(display.environmentThreshold, 100),
+      modelFormat: oneOf(display.modelFormat, ["full", "compact", "short"] as const, D.display.modelFormat),
+      modelOverride: truncatedString(display.modelOverride, D.display.modelOverride),
+      customLine: truncatedString(display.customLine, D.display.customLine),
+      customLinePosition: oneOf(display.customLinePosition, ["first", "last"] as const, D.display.customLinePosition),
+      timeFormat: oneOf(
+        display.timeFormat,
+        ["relative", "absolute", "both", "elapsed", "elapsedAndAbsolute"] as const,
+        D.display.timeFormat,
+      ),
+    },
+    colors: {
+      context: color("context"),
+      warning: color("warning"),
+      critical: color("critical"),
+      model: color("model"),
+      project: color("project"),
+      git: color("git"),
+      gitBranch: color("gitBranch"),
+      label: color("label"),
+      custom: color("custom"),
+      barFilled: barChar("barFilled"),
+      barEmpty: barChar("barEmpty"),
+    },
+  };
+}
+
+/** Objects merge recursively; arrays and scalars from `override` replace. */
+function deepMerge(base: Raw, override: Raw): Raw {
+  const merged: Raw = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    const current = merged[key];
+    merged[key] = isObject(value) && isObject(current) ? deepMerge(current, value) : value;
+  }
+  return merged;
+}
+
+/** Missing, unreadable, unparseable or non-object files count as empty so the HUD still renders. */
+function readJsonObject(file: string): Raw {
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    return isObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Reads `<agentDir>/pi-hud-plus.json`, then deep-merges `<cwd>/.pi/pi-hud-plus.json` over it. */
+export function loadConfig(cwd: string, agentDir: string): HudConfig {
+  const global = readJsonObject(path.join(agentDir, "pi-hud-plus.json"));
+  // A cloned repo must not run shell commands just by being opened.
+  const { extraCommand: _ignored, ...project } = readJsonObject(path.join(cwd, ".pi", "pi-hud-plus.json"));
+  return mergeConfig(deepMerge(global, project));
+}

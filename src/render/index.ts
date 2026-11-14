@@ -12,9 +12,9 @@ export function renderHud(snapshot: HudSnapshot, config: HudConfig, width: numbe
 
   // shortcut: model + last path segment only; the layout ticket ports claude-hud's render/lines and render/index.
   const parts: string[] = [];
-  if (snapshot.model) parts.push(modelColor(`[${snapshot.model.name}]`, colors));
+  if (config.display.showModel && snapshot.model) parts.push(modelColor(`[${snapshot.model.name}]`, colors));
   const segments = snapshot.cwd.split(/[/\\]/).filter(Boolean);
-  parts.push(projectColor(segments.at(-1) ?? "/", colors));
+  if (config.display.showProject) parts.push(projectColor(segments.at(-1) ?? "/", colors));
 
-  return [parts.join(" │ ")].map((line) => truncateToWidth(line, width, "…"));
+  return (parts.length ? [parts.join(" │ ")] : []).map((line) => truncateToWidth(line, width, "…"));
 }

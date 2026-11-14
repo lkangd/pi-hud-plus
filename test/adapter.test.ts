@@ -2,7 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as strip } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import piHud from "../src/index.ts";
+
+// Isolate from the real ~/.pi/agent: getAgentDir() honours PI_CODING_AGENT_DIR.
+const agentDir = mkdtempSync(join(tmpdir(), "pi-hud-agent-"));
+process.env.PI_CODING_AGENT_DIR = agentDir;
 
 type Handler = (event: any, ctx: any) => unknown;
 type Footer = { render(width: number): string[]; dispose?(): void };
@@ -91,4 +98,26 @@ test("a new session ignores the previous session's TUI", async () => {
   assert.equal(first.tui.renders, 0);
   assert.equal(second.tui.renders, 1);
   assert.deepEqual(second.footer()!.render(80).map(strip), ["[GPT-5] │ other"]);
+});
+
+test("session_start reads the global and project config files", async () => {
+  const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-repo");
+  mkdirSync(join(cwd, ".pi"), { recursive: true });
+  const globalFile = join(agentDir, "pi-hud-plus.json");
+  writeFileSync(globalFile, JSON.stringify({ display: { showModel: false, showProject: false } }));
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display: { showProject: true } }));
+  try {
+    const { emit } = fakePi();
+    const { ctx, footer } = fakeCtx({ cwd });
+    await emit("session_start", { reason: "startup" }, ctx);
+    assert.deepEqual(footer()!.render(80).map(strip), ["my-repo"]);
+
+    // Edits apply on the next session_start (/reload), not before.
+    writeFileSync(globalFile, "{}");
+    assert.deepEqual(footer()!.render(80).map(strip), ["my-repo"]);
+    await emit("session_start", { reason: "reload" }, ctx);
+    assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-repo"]);
+  } finally {
+    writeFileSync(globalFile, "{}");
+  }
 });
