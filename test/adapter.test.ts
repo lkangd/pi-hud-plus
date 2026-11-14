@@ -14,9 +14,10 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 type Handler = (event: any, ctx: any) => unknown;
 type Footer = { render(width: number): string[]; dispose?(): void };
 
-function fakePi() {
+function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.reject(new Error("unexpected exec"))) {
   const handlers = new Map<string, Handler[]>();
   const pi = {
+    exec,
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -34,16 +35,32 @@ beforeEach(() => {
   mock.timers.reset();
 });
 
-function fakeCtx(overrides: object = {}) {
+/** footerData with a settable branch and a working onBranchChange. */
+function fakeFooterData(branch: string | null) {
+  const listeners = new Set<() => void>();
+  return {
+    branch,
+    listeners,
+    getGitBranch() {
+      return this.branch;
+    },
+    getExtensionStatuses: () => new Map(),
+    getAvailableProviderCount: () => 1,
+    onBranchChange(cb: () => void) {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    changeBranch(next: string) {
+      this.branch = next;
+      for (const cb of listeners) cb();
+    },
+  };
+}
+
+function fakeCtx(overrides: object = {}, footerData = fakeFooterData(null)) {
   const footers: (Footer | undefined)[] = [];
   const notices: string[] = [];
   const tui = { renders: 0, requestRender() { this.renders++; } };
-  const footerData = {
-    getGitBranch: () => null,
-    getExtensionStatuses: () => new Map(),
-    getAvailableProviderCount: () => 1,
-    onBranchChange: () => () => {},
-  };
   const ctx = {
     mode: "tui",
     hasUI: true,
@@ -195,4 +212,143 @@ test("pi resetting the footer on /reload before session_shutdown is not displace
   const reloaded = fakePi();
   await reloaded.emit("session_start", { reason: "reload" }, ctx);
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
+});
+
+// ---- Git job ----
+
+/** A pi.exec fake: records each git call; while held, calls stay pending until released. */
+function fakeExec(stdout = " M file.txt\n") {
+  const calls: { args: string[]; cwd?: string; release(): void }[] = [];
+  let held = false;
+  const exec = (_command: string, args: string[], options?: { cwd?: string }) =>
+    new Promise((resolve) => {
+      const release = () => resolve({ stdout, stderr: "", code: 0, killed: false, truncated: false });
+      calls.push({ args, cwd: options?.cwd, release });
+      if (!held) release();
+    });
+  return { exec, calls, hold: (value: boolean) => (held = value) };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+const THROTTLE_MS = 2000;
+const BACKSTOP_MS = 30_000;
+
+async function gitSetup(opts: { branch?: string | null; cwd?: string } = {}) {
+  mock.timers.reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const git = fakeExec();
+  const footerData = fakeFooterData(opts.branch === undefined ? "main" : opts.branch);
+  const { emit } = fakePi(git.exec);
+  const env = fakeCtx({ cwd: opts.cwd ?? "/home/me/code/my-project" }, footerData);
+  await emit("session_start", { reason: "startup" }, env.ctx);
+  await flush();
+  return { ...env, emit, git, footerData };
+}
+
+test("session_start runs git status in the cwd and shows the branch and dirty state", async () => {
+  const { git, footer } = await gitSetup();
+  assert.equal(git.calls.length, 1);
+  assert.ok(git.calls[0]!.args.includes("--no-optional-locks") && git.calls[0]!.args.includes("status"));
+  assert.equal(git.calls[0]!.cwd, "/home/me/code/my-project");
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project git:(main*)"]);
+});
+
+test("no git command runs outside a repo or when gitStatus.enabled is false", async () => {
+  const outside = await gitSetup({ branch: null });
+  assert.equal(outside.git.calls.length, 0);
+
+  const cwd = mkdtempSync(join(tmpdir(), "pi-hud-cwd-"));
+  mkdirSync(join(cwd, ".pi"));
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ gitStatus: { enabled: false } }));
+  const off = await gitSetup({ cwd });
+  off.footerData.changeBranch("dev");
+  await off.emit("agent_end", {}, off.ctx);
+  mock.timers.tick(BACKSTOP_MS);
+  await flush();
+  assert.equal(off.git.calls.length, 0);
+});
+
+test("triggers during a run are coalesced into one throttled follow-up run", async () => {
+  const { git, emit, ctx } = await gitSetup();
+  git.hold(true);
+  mock.timers.tick(THROTTLE_MS);
+  await emit("agent_end", {}, ctx);
+  assert.equal(git.calls.length, 2, "a trigger after the throttle window runs at once");
+  await emit("tool_execution_end", {}, ctx);
+  await emit("tool_execution_end", {}, ctx);
+  await emit("agent_end", {}, ctx);
+  assert.equal(git.calls.length, 2, "at most one run in flight");
+
+  git.hold(false);
+  git.calls[1]!.release();
+  await flush();
+  mock.timers.tick(THROTTLE_MS - 1);
+  await flush();
+  assert.equal(git.calls.length, 2, "the follow-up waits for the throttle");
+  mock.timers.tick(1);
+  await flush();
+  assert.equal(git.calls.length, 3, "one follow-up for all coalesced triggers");
+});
+
+test("runs are spaced by the throttle", async () => {
+  const { git, emit, ctx } = await gitSetup();
+  await emit("agent_end", {}, ctx);
+  await emit("tool_execution_end", {}, ctx);
+  assert.equal(git.calls.length, 1);
+  mock.timers.tick(THROTTLE_MS);
+  await flush();
+  assert.equal(git.calls.length, 2);
+});
+
+test("a 30s backstop refreshes git without any trigger", async () => {
+  const { git } = await gitSetup();
+  mock.timers.tick(BACKSTOP_MS - 1);
+  await flush();
+  assert.equal(git.calls.length, 1);
+  mock.timers.tick(1);
+  await flush();
+  assert.equal(git.calls.length, 2);
+});
+
+test("a branch change refreshes git and shows the new branch", async () => {
+  const { git, footerData, footer, tui } = await gitSetup();
+  mock.timers.tick(THROTTLE_MS);
+  const renders = tui.renders;
+  footerData.changeBranch("feature/x");
+  await flush();
+  assert.equal(git.calls.length, 2);
+  assert.ok(tui.renders > renders);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project git:(feature/x*)"]);
+});
+
+test("rendering never runs git", async () => {
+  const { git, footer } = await gitSetup();
+  mock.timers.tick(THROTTLE_MS);
+  for (let i = 0; i < 5; i++) footer()!.render(80);
+  await flush();
+  assert.equal(git.calls.length, 1);
+});
+
+test("nothing runs while Displaced or after shutdown", async () => {
+  const displaced = await gitSetup();
+  displaced.takeFooter();
+  displaced.footerData.changeBranch("dev");
+  await displaced.emit("agent_end", {}, displaced.ctx);
+  mock.timers.tick(BACKSTOP_MS * 2);
+  await flush();
+  assert.equal(displaced.git.calls.length, 1);
+  assert.equal(displaced.footerData.listeners.size, 0, "branch listener unsubscribed");
+
+  const shut = await gitSetup();
+  shut.git.hold(true);
+  mock.timers.tick(THROTTLE_MS);
+  await shut.emit("agent_end", {}, shut.ctx); // in flight across shutdown
+  await shut.emit("tool_execution_end", {}, shut.ctx); // pending follow-up
+  await shut.emit("session_shutdown", { reason: "quit" }, shut.ctx);
+  shut.git.calls[1]!.release();
+  shut.footerData.changeBranch("dev");
+  mock.timers.tick(BACKSTOP_MS * 2);
+  await flush();
+  assert.equal(shut.git.calls.length, 2);
+  assert.equal(shut.footerData.listeners.size, 0);
 });

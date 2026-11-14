@@ -1,5 +1,12 @@
-import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "./config.ts";
+import {
+  getAgentDir,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ExtensionUIContext,
+  type ReadonlyFooterDataProvider,
+} from "@earendil-works/pi-coding-agent";
+import { loadConfig, type HudConfig } from "./config.ts";
+import { getGitStatus } from "./git.ts";
 import { renderHud } from "./render/index.ts";
 import type { HudSnapshot } from "./types.ts";
 
@@ -10,7 +17,16 @@ interface Session {
   /** Another extension took the footer: the HUD is dormant until the next session_start. */
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
+  git?: GitJob;
 }
+
+interface GitJob {
+  trigger(): void;
+  stop(): void;
+}
+
+const GIT_THROTTLE_MS = 2000;
+const GIT_BACKSTOP_MS = 30_000;
 
 // On globalThis, not module scope: /reload re-imports this module, and the notice must fire once per pi process.
 const NOTICE_SHOWN = Symbol.for("pi-hud-plus.displacedNoticeShown");
@@ -46,6 +62,58 @@ export default function piHud(pi: ExtensionAPI): void {
     session!.requestRender?.();
   };
 
+  /** Async git refresh: at most one run in flight, triggers coalesced, runs spaced by the throttle, plus a backstop. */
+  const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: HudConfig["gitStatus"]): GitJob => {
+    let inFlight = false;
+    let pending = false;
+    let lastRun = -Infinity;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const run = async () => {
+      timer = undefined;
+      if (!isLive(gen)) return;
+      inFlight = true;
+      lastRun = Date.now();
+      try {
+        const branch = footerData.getGitBranch();
+        const git = branch ? { branch, ...(await getGitStatus(pi.exec.bind(pi), cwd, options)) } : null;
+        if (git || session?.snapshot.git) update(gen, { git });
+      } catch {
+        // Keep the last snapshot; the next trigger retries.
+      } finally {
+        inFlight = false;
+        if (pending) {
+          pending = false;
+          trigger();
+        }
+      }
+    };
+
+    const trigger = () => {
+      if (!isLive(gen) || timer) return;
+      if (inFlight) {
+        pending = true;
+        return;
+      }
+      const wait = lastRun + GIT_THROTTLE_MS - Date.now();
+      if (wait <= 0) void run();
+      else timer = setTimeout(run, wait);
+    };
+
+    const backstop = setInterval(trigger, GIT_BACKSTOP_MS);
+    backstop.unref?.();
+    const unsubscribe = footerData.onBranchChange(trigger);
+    trigger();
+    return {
+      trigger,
+      stop() {
+        clearTimeout(timer);
+        clearInterval(backstop);
+        unsubscribe();
+      },
+    };
+  };
+
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
@@ -54,14 +122,16 @@ export default function piHud(pi: ExtensionAPI): void {
       displaced: false,
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
-    setFooter(ctx.ui, (tui) => {
+    setFooter(ctx.ui, (tui, _theme, footerData) => {
       current.requestRender = () => tui.requestRender();
+      if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, config.gitStatus);
       return {
         render: (width) => renderHud(current.snapshot, config, width),
         invalidate() {},
         dispose() {
           if (ownCall || current.displaced) return;
           current.displaced = true;
+          current.git?.stop();
           current.displacedNotice = setTimeout(() => {
             if (globals[NOTICE_SHOWN]) return;
             globals[NOTICE_SHOWN] = true;
@@ -76,10 +146,14 @@ export default function piHud(pi: ExtensionAPI): void {
     update(generation, { model: { name: event.model.name } });
   });
 
+  pi.on("agent_end", () => session?.git?.trigger());
+  pi.on("tool_execution_end", () => session?.git?.trigger());
+
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
     const { displaced, displacedNotice } = session;
     clearTimeout(displacedNotice);
+    session.git?.stop();
     session = undefined;
     generation++;
     // Only while we still own the footer: otherwise this would wipe the other extension's footer.
