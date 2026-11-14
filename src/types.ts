@@ -1,5 +1,6 @@
 import type { HudConfig } from "./config.ts";
 import type { GitStatus } from "./git.ts";
+import type { MemoryInfo } from "./memory.ts";
 
 export interface HudTool {
   name: string;
@@ -33,6 +34,8 @@ export interface HudSnapshot {
   session?: HudSession;
   /** Output tokens/s of the reply streaming now (or the last one). */
   speed?: number;
+  /** System RAM, sampled on the clock tick. Absent or null: off or not sampled yet. */
+  memory?: MemoryInfo | null;
 }
 
 /** Token totals and cost summed over a session, like pi's built-in footer. */

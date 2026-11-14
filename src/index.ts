@@ -9,10 +9,11 @@ import {
 import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { getGitStatus } from "./git.ts";
+import { getMemoryUsage } from "./memory.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
 import { createSpeedTracker } from "./speed-tracker.ts";
-import type { HudContext, HudSnapshot } from "./types.ts";
+import type { HudContext, HudSnapshot, HudTool } from "./types.ts";
 
 interface Session {
   generation: number;
@@ -29,6 +30,18 @@ interface Session {
   /** The latest reply's prompt split, for the token breakdown. */
   // shortcut: only replies seen since session_start feed it, so a resumed session shows no breakdown until the next reply; seed it from sessionManager's last assistant entry if that matters.
   breakdown?: HudContext["breakdown"];
+  /** Running and recent tools by toolCallId, oldest first. */
+  tools: Map<string, HudTool>;
+}
+
+/** claude-hud keeps the transcript's last 20 tools. */
+const MAX_TOOLS = 20;
+
+/** The argument shown after a running tool's name, for pi's built-in tools. */
+function toolTarget(name: string, args: Record<string, unknown> | undefined): string | undefined {
+  const value = name === "bash" ? args?.command : (args?.path ?? args?.file_path ?? args?.pattern);
+  if (typeof value !== "string" || !value) return undefined;
+  return name === "bash" && value.length > 30 ? `${value.slice(0, 30)}...` : value;
 }
 
 /** A finished-or-streaming reply's usage; error/aborted replies don't describe the context. */
@@ -157,9 +170,16 @@ export default function piHud(pi: ExtensionAPI): void {
       },
       displaced: false,
       trackSpeed: createSpeedTracker(),
+      tools: new Map(),
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
-    if (hasTickingElement(config)) current.stopClock = startClock((now) => update(current.generation, { now }));
+    if (hasTickingElement(config)) {
+      current.stopClock = startClock((now) => {
+        update(current.generation, { now });
+        // Memory is sampled here, never in render; the first reading lands on the first tick.
+        if (config.display.showMemoryUsage) void getMemoryUsage().then((memory) => update(current.generation, { memory }));
+      });
+    }
     setFooter(ctx.ui, (tui, _theme, footerData) => {
       current.requestRender = () => tui.requestRender();
       if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, config.gitStatus);
@@ -201,6 +221,20 @@ export default function piHud(pi: ExtensionAPI): void {
     const speed = session.trackSpeed(usage.output, Date.now());
     // Most updates come too close together for a reading; keep showing the last one.
     if (speed !== null) update(generation, { speed });
+  });
+
+  pi.on("tool_execution_start", (event) => {
+    if (!isLive(generation)) return;
+    const { tools } = session!;
+    tools.set(event.toolCallId, { name: event.toolName, target: toolTarget(event.toolName, event.args), status: "running" });
+    if (tools.size > MAX_TOOLS) tools.delete(tools.keys().next().value!);
+    update(generation, { tools: [...tools.values()] });
+  });
+  pi.on("tool_execution_end", (event) => {
+    const tool = isLive(generation) ? session!.tools.get(event.toolCallId) : undefined;
+    if (!tool) return;
+    session!.tools.set(event.toolCallId, { ...tool, status: event.isError ? "error" : "completed" });
+    update(generation, { tools: [...session!.tools.values()] });
   });
 
   pi.on("agent_end", () => session?.git?.trigger());

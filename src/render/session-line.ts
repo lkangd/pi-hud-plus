@@ -4,6 +4,7 @@ import { renderCompactGitPart, withGit } from "./lines/git.ts";
 import { renderModelBadge, renderProjectPath, withCustomLine } from "./lines/project.ts";
 import { renderCost, renderSessionName, renderSessionTokensPart, renderSpeed } from "./lines/session-stats.ts";
 import { renderDuration, renderSessionTimeLine } from "./lines/session-time.ts";
+import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
 
 /** The compact layout's single Line: model badge + context bar, project, then the other Elements inline. */
 export function renderSessionLine(ctx: RenderContext): string | null {
@@ -25,6 +26,7 @@ export function renderSessionLine(ctx: RenderContext): string | null {
     renderSessionTokensPart(ctx),
     renderDuration(ctx),
     renderSessionTimeLine(ctx),
+    renderPromptCacheLine(ctx),
     renderCost(ctx),
     renderSpeed(ctx),
   ]) {

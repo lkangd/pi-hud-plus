@@ -4,6 +4,8 @@ import { setLanguage } from "../i18n/index.ts";
 import type { HudSnapshot, RenderContext } from "../types.ts";
 import { dim } from "./colors.ts";
 import { renderIdentityLine } from "./lines/identity.ts";
+import { renderMemoryLine } from "./lines/memory.ts";
+import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
 import { renderProjectLine } from "./lines/project.ts";
 import { renderSessionTimeLine } from "./lines/session-time.ts";
 import { renderSessionTokensLine } from "./lines/session-stats.ts";
@@ -18,8 +20,8 @@ const notPortedYet: ElementRenderer = () => null;
 const ELEMENT_RENDERERS: Record<HudElement, ElementRenderer> = {
   project: renderProjectLine,
   context: renderIdentityLine,
-  promptCache: notPortedYet,
-  memory: notPortedYet,
+  promptCache: renderPromptCacheLine,
+  memory: renderMemoryLine,
   environment: notPortedYet,
   tools: (ctx) => (ctx.config.display.showTools ? renderToolsLine(ctx) : null),
   sessionTime: renderSessionTimeLine,
