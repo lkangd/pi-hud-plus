@@ -1,5 +1,6 @@
 import type { RenderContext } from "../types.ts";
 import { renderContextParts } from "./lines/identity.ts";
+import { renderCompactGitPart, withGit } from "./lines/git.ts";
 import { renderModelBadge, renderProjectPath, withCustomLine } from "./lines/project.ts";
 import { renderCost, renderSessionName, renderSessionTokensPart, renderSpeed } from "./lines/session-stats.ts";
 import { renderDuration, renderSessionTimeLine } from "./lines/session-time.ts";
@@ -16,10 +17,9 @@ export function renderSessionLine(ctx: RenderContext): string | null {
   ].filter((part) => part !== null);
   if (head.length > 0) parts.push(head.join(" "));
 
-  const project = renderProjectPath(ctx);
-  if (project) parts.push(project);
-  // Git goes before the session name, version and config counts before the session tokens,
-  // prompt cache after the times and the Extra command after speed, in claude-hud's order.
+  parts.push(...withGit(renderProjectPath(ctx), renderCompactGitPart(ctx), ctx.config));
+  // Version and config counts go before the session tokens, prompt cache after the times
+  // and the Extra command after speed, in claude-hud's order.
   for (const part of [
     renderSessionName(ctx),
     renderSessionTokensPart(ctx),

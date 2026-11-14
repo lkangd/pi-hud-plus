@@ -14,9 +14,10 @@ process.env.PI_CODING_AGENT_DIR = agentDir;
 type Handler = (event: any, ctx: any) => unknown;
 type Footer = { render(width: number): string[]; dispose?(): void };
 
-function fakePi(overrides: object = {}) {
+function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.reject(new Error("unexpected exec")), overrides: object = {}) {
   const handlers = new Map<string, Handler[]>();
   const pi = {
+    exec,
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -47,21 +48,38 @@ function fakeSessionManager(entries: object[] = [], startedAt = "2026-05-08T09:1
   };
 }
 
-function fakeCtx(overrides: object = {}) {
+/** footerData with a settable branch and a working onBranchChange. */
+function fakeFooterData(branch: string | null) {
+  const listeners = new Set<() => void>();
+  return {
+    branch,
+    listeners,
+    getGitBranch() {
+      return this.branch;
+    },
+    getExtensionStatuses: () => new Map(),
+    getAvailableProviderCount: () => 1,
+    onBranchChange(cb: () => void) {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+    changeBranch(next: string) {
+      this.branch = next;
+      for (const cb of listeners) cb();
+    },
+  };
+}
+
+function fakeCtx(overrides: object = {}, footerData = fakeFooterData(null)) {
   const footers: (Footer | undefined)[] = [];
   const notices: string[] = [];
   const tui = { renders: 0, requestRender() { this.renders++; } };
-  const footerData = {
-    getGitBranch: () => null,
-    getExtensionStatuses: () => new Map(),
-    getAvailableProviderCount: () => 1,
-    onBranchChange: () => () => {},
-  };
   const ctx = {
     mode: "tui",
     hasUI: true,
     cwd: "/home/me/code/my-project",
-    model: { name: "Claude Opus 4.6", provider: "anthropic", id: "claude-opus-4-6" },
+    model: { name: "Claude Opus 4.6", provider: "anthropic", id: "claude-opus-4-6", contextWindow: 200_000 },
+    getContextUsage: () => undefined as object | undefined,
     sessionManager: fakeSessionManager(),
     modelRegistry: { isUsingOAuth: () => false, getProvider: () => undefined },
     ui: {
@@ -288,7 +306,7 @@ test("start and last reply come from the session header and the latest assistant
 
 test("the session name comes from pi and follows renames", async () => {
   let name: string | undefined = "refactor";
-  const { emit } = fakePi({ getSessionName: () => name });
+  const { emit } = fakePi(undefined, { getSessionName: () => name });
   const { ctx, footer } = fakeCtx({ cwd: projectWith({ showSessionName: true }) });
   await emit("session_start", { reason: "startup" }, ctx);
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project │ refactor"]);
@@ -300,7 +318,9 @@ test("the session name comes from pi and follows renames", async () => {
 test("speed comes from the streaming reply's output tokens", async () => {
   mock.timers.enable({ apis: ["Date"], now: 1000 });
   const { emit } = fakePi();
-  const { ctx, footer } = fakeCtx({ cwd: projectWith({ showSpeed: true, showModel: false, showProject: false }) });
+  // No context window, so the live context Line stays out of the way.
+  const model = { name: "Claude", provider: "anthropic", id: "c" };
+  const { ctx, footer } = fakeCtx({ cwd: projectWith({ showSpeed: true, showModel: false, showProject: false }), model });
   await emit("session_start", { reason: "startup" }, ctx);
   const streamed = (output: number) => ({ message: { role: "assistant", usage: usage(0, output, 0, 0, 0) }, assistantMessageEvent: { type: "text_delta" } });
   await emit("message_update", streamed(10), ctx);
@@ -355,4 +375,236 @@ test("the clock stops while Displaced", async () => {
   takeFooter();
   mock.timers.tick(5000);
   assert.equal(tui.renders, 0);
+});
+
+// ---- Git job ----
+
+/** A pi.exec fake: records each git call; while held, calls stay pending until released. */
+function fakeExec(stdout = " M file.txt\n") {
+  const calls: { args: string[]; cwd?: string; release(): void }[] = [];
+  let held = false;
+  const exec = (_command: string, args: string[], options?: { cwd?: string }) =>
+    new Promise((resolve) => {
+      const release = () => resolve({ stdout, stderr: "", code: 0, killed: false, truncated: false });
+      calls.push({ args, cwd: options?.cwd, release });
+      if (!held) release();
+    });
+  return { exec, calls, hold: (value: boolean) => (held = value) };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+const THROTTLE_MS = 2000;
+const BACKSTOP_MS = 30_000;
+
+async function gitSetup(opts: { branch?: string | null; cwd?: string } = {}) {
+  mock.timers.reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const git = fakeExec();
+  const footerData = fakeFooterData(opts.branch === undefined ? "main" : opts.branch);
+  const { emit } = fakePi(git.exec);
+  const env = fakeCtx({ cwd: opts.cwd ?? "/home/me/code/my-project" }, footerData);
+  await emit("session_start", { reason: "startup" }, env.ctx);
+  await flush();
+  return { ...env, emit, git, footerData };
+}
+
+test("session_start runs git status in the cwd and shows the branch and dirty state", async () => {
+  const { git, footer } = await gitSetup();
+  assert.equal(git.calls.length, 1);
+  assert.ok(git.calls[0]!.args.includes("--no-optional-locks") && git.calls[0]!.args.includes("status"));
+  assert.equal(git.calls[0]!.cwd, "/home/me/code/my-project");
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project git:(main*)"]);
+});
+
+test("no git command runs outside a repo or when gitStatus.enabled is false", async () => {
+  const outside = await gitSetup({ branch: null });
+  assert.equal(outside.git.calls.length, 0);
+
+  const cwd = mkdtempSync(join(tmpdir(), "pi-hud-cwd-"));
+  mkdirSync(join(cwd, ".pi"));
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ gitStatus: { enabled: false } }));
+  const off = await gitSetup({ cwd });
+  off.footerData.changeBranch("dev");
+  await off.emit("agent_end", {}, off.ctx);
+  mock.timers.tick(BACKSTOP_MS);
+  await flush();
+  assert.equal(off.git.calls.length, 0);
+});
+
+test("triggers during a run are coalesced into one throttled follow-up run", async () => {
+  const { git, emit, ctx } = await gitSetup();
+  git.hold(true);
+  mock.timers.tick(THROTTLE_MS);
+  await emit("agent_end", {}, ctx);
+  assert.equal(git.calls.length, 2, "a trigger after the throttle window runs at once");
+  await emit("tool_execution_end", {}, ctx);
+  await emit("tool_execution_end", {}, ctx);
+  await emit("agent_end", {}, ctx);
+  assert.equal(git.calls.length, 2, "at most one run in flight");
+
+  git.hold(false);
+  git.calls[1]!.release();
+  await flush();
+  mock.timers.tick(THROTTLE_MS - 1);
+  await flush();
+  assert.equal(git.calls.length, 2, "the follow-up waits for the throttle");
+  mock.timers.tick(1);
+  await flush();
+  assert.equal(git.calls.length, 3, "one follow-up for all coalesced triggers");
+});
+
+test("runs are spaced by the throttle", async () => {
+  const { git, emit, ctx } = await gitSetup();
+  await emit("agent_end", {}, ctx);
+  await emit("tool_execution_end", {}, ctx);
+  assert.equal(git.calls.length, 1);
+  mock.timers.tick(THROTTLE_MS);
+  await flush();
+  assert.equal(git.calls.length, 2);
+});
+
+test("a 30s backstop refreshes git without any trigger", async () => {
+  const { git } = await gitSetup();
+  mock.timers.tick(BACKSTOP_MS - 1);
+  await flush();
+  assert.equal(git.calls.length, 1);
+  mock.timers.tick(1);
+  await flush();
+  assert.equal(git.calls.length, 2);
+});
+
+test("a branch change refreshes git and shows the new branch", async () => {
+  const { git, footerData, footer, tui } = await gitSetup();
+  mock.timers.tick(THROTTLE_MS);
+  const renders = tui.renders;
+  footerData.changeBranch("feature/x");
+  await flush();
+  assert.equal(git.calls.length, 2);
+  assert.ok(tui.renders > renders);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project git:(feature/x*)"]);
+});
+
+test("rendering never runs git", async () => {
+  const { git, footer } = await gitSetup();
+  mock.timers.tick(THROTTLE_MS);
+  for (let i = 0; i < 5; i++) footer()!.render(80);
+  await flush();
+  assert.equal(git.calls.length, 1);
+});
+
+test("nothing runs while Displaced or after shutdown", async () => {
+  const displaced = await gitSetup();
+  displaced.takeFooter();
+  displaced.footerData.changeBranch("dev");
+  await displaced.emit("agent_end", {}, displaced.ctx);
+  mock.timers.tick(BACKSTOP_MS * 2);
+  await flush();
+  assert.equal(displaced.git.calls.length, 1);
+  assert.equal(displaced.footerData.listeners.size, 0, "branch listener unsubscribed");
+
+  const shut = await gitSetup();
+  shut.git.hold(true);
+  mock.timers.tick(THROTTLE_MS);
+  await shut.emit("agent_end", {}, shut.ctx); // in flight across shutdown
+  await shut.emit("tool_execution_end", {}, shut.ctx); // pending follow-up
+  await shut.emit("session_shutdown", { reason: "quit" }, shut.ctx);
+  shut.git.calls[1]!.release();
+  shut.footerData.changeBranch("dev");
+  mock.timers.tick(BACKSTOP_MS * 2);
+  await flush();
+  assert.equal(shut.git.calls.length, 2);
+  assert.equal(shut.footerData.listeners.size, 0);
+});
+
+/** A ctx whose getContextUsage() returns whatever `usage.current` is. */
+function contextCtx(tokens: number | null) {
+  const usage = { current: { tokens, contextWindow: 200_000, percent: tokens === null ? null : (tokens / 200_000) * 100 } };
+  const set = (next: number | null) => {
+    usage.current = { tokens: next, contextWindow: 200_000, percent: next === null ? null : (next / 200_000) * 100 };
+  };
+  const fake = fakeCtx({ getContextUsage: () => usage.current });
+  // The context value, without the label and bar.
+  const value = () => fake.footer()!.render(80).map(strip)[1]?.replace(/^Context [█░]+ /, "");
+  return { ...fake, set, value };
+}
+
+const reply = (usage: object, stopReason = "pending") => ({
+  message: { role: "assistant", stopReason, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...usage } },
+});
+
+test("the context bar shows ctx.getContextUsage(), refreshed on message_end, agent_end, compaction and model change", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.equal(value(), "10%");
+  const refreshes: [string, object][] = [
+    ["message_end", reply({ totalTokens: 1 }, "stop")],
+    ["agent_end", { messages: [] }],
+    ["session_compact", {}],
+    ["model_select", { model: { name: "Claude Opus 4.6" }, source: "set" }],
+  ];
+  for (const [i, [event, payload]] of refreshes.entries()) {
+    set(40_000 + i * 20_000);
+    await emit(event, payload, ctx);
+    assert.equal(value(), `${20 + i * 10}%`, event);
+  }
+});
+
+test("compaction's unknown token count renders ?", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(150_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  set(null);
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "?");
+});
+
+test("a streaming reply's usage overrides the context until agent start/end, tool start, model select, compaction or tree navigation", async () => {
+  const { emit } = fakePi();
+  const { ctx, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  const clears: [string, object][] = [
+    ["agent_start", {}],
+    ["agent_end", { messages: [] }],
+    ["tool_execution_start", { toolCallId: "1", toolName: "bash", args: {} }],
+    ["model_select", { model: { name: "Claude Opus 4.6" }, source: "set" }],
+    ["session_compact", {}],
+    ["session_tree", { newLeafId: null, oldLeafId: null }],
+  ];
+  for (const [event, payload] of clears) {
+    await emit("message_update", reply({ totalTokens: 60_000 }), ctx);
+    assert.equal(value(), "30%", `override before ${event}`);
+    await emit("message_end", reply({ totalTokens: 60_000 }, "stop"), ctx);
+    assert.equal(value(), "30%", `override survives message_end before ${event}`);
+    await emit(event, payload, ctx);
+    assert.equal(value(), "10%", event);
+  }
+});
+
+test("the override sums usage parts when totalTokens is missing, and skips error/aborted and empty usage", async () => {
+  const { emit } = fakePi();
+  const { ctx, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("message_update", reply({ input: 80_000 }, "error"), ctx);
+  await emit("message_update", reply({ input: 80_000 }, "aborted"), ctx);
+  await emit("message_update", reply({}), ctx);
+  await emit("message_update", { message: { role: "user", content: "hi" } }, ctx);
+  assert.equal(value(), "10%");
+  await emit("message_update", reply({ input: 50_000, output: 1_000, cacheRead: 7_000, cacheWrite: 2_000 }), ctx);
+  assert.equal(value(), "30%");
+});
+
+test("the token breakdown comes from the latest reply and clears on compaction", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(172_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("message_end", reply({ input: 150_000, cacheRead: 15_000, cacheWrite: 5_000, totalTokens: 172_000 }, "stop"), ctx);
+  assert.equal(value(), "86% (in: 150k, cache: 20k)");
+  await emit("message_update", reply({ input: 160_000, cacheRead: 15_000, totalTokens: 180_000 }), ctx);
+  assert.equal(value(), "90% (in: 160k, cache: 15k)");
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "86%");
+  set(null);
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "?");
 });

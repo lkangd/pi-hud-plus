@@ -1,5 +1,6 @@
 import type { RenderContext } from "../../types.ts";
 import { custom as customColor, model as modelColor, project as projectColor } from "../colors.ts";
+import { renderGitPart, withGit } from "./git.ts";
 import { renderCost, renderSessionName, renderSpeed } from "./session-stats.ts";
 import { renderDuration } from "./session-time.ts";
 
@@ -35,10 +36,10 @@ export function withCustomLine(parts: string[], { config }: RenderContext): stri
 }
 
 export function renderProjectLine(ctx: RenderContext): string | null {
-  // Git goes after the path, version and the Extra command after the session name, in claude-hud's order.
+  // Version and the Extra command go after the session name, in claude-hud's order.
   const parts = [
     renderModelBadge(ctx),
-    renderProjectPath(ctx),
+    ...withGit(renderProjectPath(ctx), renderGitPart(ctx), ctx.config),
     renderSessionName(ctx),
     renderDuration(ctx),
     renderCost(ctx),
