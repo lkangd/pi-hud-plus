@@ -40,7 +40,7 @@ export interface HudSnapshot {
   now?: number;
   /** undefined = not read from pi's session yet. */
   session?: HudSession;
-  /** Output tokens/s of the reply streaming now (or the last one). */
+  /** Output tokens/s of the reply streaming now; absent between replies. */
   speed?: number;
   /** The Extra command's last label; null/absent = off, failed or not run yet. */
   extraLabel?: string | null;

@@ -387,6 +387,26 @@ test("speed comes from the streaming reply's output tokens", async () => {
   assert.deepEqual(footer()!.render(80).map(strip), ["out: 100.0 tok/s"]);
 });
 
+test("speed hides once the reply stops streaming, like claude-hud with no fresh reading", async () => {
+  mock.timers.enable({ apis: ["Date"], now: 1000 });
+  const { emit } = fakePi();
+  const model = { name: "Claude", provider: "anthropic", id: "c" };
+  const { ctx, footer } = fakeCtx({ cwd: projectWith({ showSpeed: true, showModel: false, showProject: false }), model });
+  await emit("session_start", { reason: "startup" }, ctx);
+  const message = (output: number) => ({ role: "assistant", usage: usage(0, output, 0, 0, 0) });
+  for (const [event, payload] of [
+    ["message_end", { message: message(60) }],
+    ["agent_end", { messages: [] }],
+  ] as const) {
+    await emit("message_update", { message: message(10) }, ctx);
+    mock.timers.tick(500);
+    await emit("message_update", { message: message(60) }, ctx);
+    assert.deepEqual(footer()!.render(80).map(strip), ["out: 100.0 tok/s"], event);
+    await emit(event, payload, ctx);
+    assert.deepEqual(footer()!.render(80), [], event);
+  }
+});
+
 test("the clock ticks every second only while a ticking Element is on", async () => {
   const start = new Date(2026, 4, 8, 9, 14).getTime();
   mock.timers.enable({ apis: ["setInterval", "Date"], now: start });
@@ -661,6 +681,23 @@ test("the token breakdown comes from the latest reply and clears on compaction",
   set(null);
   await emit("session_compact", {}, ctx);
   assert.equal(value(), "?");
+});
+
+test("a resumed session's token breakdown comes from its latest usable reply, not from before a compaction", async () => {
+  const assistant = (usage: object, stopReason = "stop") => entry({ type: "message", ...reply({ cost: { total: 0 }, ...usage }, stopReason) });
+  const resumed = async (entries: object[]) => {
+    const { emit } = fakePi();
+    const fake = contextCtx(172_000);
+    fake.ctx.sessionManager = fakeSessionManager(entries);
+    await emit("session_start", { reason: "resume" }, fake.ctx);
+    return fake.value();
+  };
+  const latest = assistant({ input: 150_000, cacheRead: 15_000, cacheWrite: 5_000, totalTokens: 172_000 });
+  assert.equal(
+    await resumed([assistant({ input: 1, totalTokens: 1 }), latest, assistant({ input: 9, totalTokens: 9 }, "aborted"), entry({ type: "message", message: { role: "user", content: "hi" } })]),
+    "86% (in: 150k, cache: 20k)",
+  );
+  assert.equal(await resumed([latest, entry({ type: "compaction", summary: "" })]), "86%");
 });
 
 // ---- Extra command ----

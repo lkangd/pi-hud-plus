@@ -7,6 +7,7 @@ import {
   type ExtensionUIContext,
   type MessageUpdateEvent,
   type ReadonlyFooterDataProvider,
+  type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
@@ -33,7 +34,6 @@ interface Session {
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
   /** The latest reply's prompt split, for the token breakdown. */
-  // shortcut: only replies seen since session_start feed it, so a resumed session shows no breakdown until the next reply; seed it from sessionManager's last assistant entry if that matters.
   breakdown?: HudContext["breakdown"];
   /** Running and recent tools by toolCallId, oldest first. */
   tools: Map<string, HudTool>;
@@ -53,6 +53,21 @@ function toolTarget(name: string, args: Record<string, unknown> | undefined): st
 function replyUsage(message: MessageUpdateEvent["message"]) {
   if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") return undefined;
   return message.usage;
+}
+
+function breakdownOf(usage: { input: number; cacheRead: number; cacheWrite: number }): HudContext["breakdown"] {
+  return { input: usage.input, cache: usage.cacheRead + usage.cacheWrite };
+}
+
+/** A resumed session's breakdown: its latest usable reply, unless a compaction came after it. */
+function lastBreakdown(entries: SessionEntry[]): HudContext["breakdown"] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i]!;
+    if (entry.type === "compaction") return undefined;
+    const usage = entry.type === "message" ? replyUsage(entry.message) : undefined;
+    if (usage?.totalTokens) return breakdownOf(usage);
+  }
+  return undefined;
 }
 
 function readContext(ctx: ExtensionContext, breakdown: HudContext["breakdown"]): HudContext | null {
@@ -199,6 +214,7 @@ export default function piHud(pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const config = loadConfig(ctx.cwd, getAgentDir());
+    const breakdown = lastBreakdown(ctx.sessionManager.getEntries());
     const current: Session = (session = {
       generation: ++generation,
       snapshot: {
@@ -206,7 +222,7 @@ export default function piHud(pi: ExtensionAPI): void {
         thinkingLevel: pi.getThinkingLevel(),
         version: VERSION,
         cwd: ctx.cwd,
-        context: readContext(ctx, undefined),
+        context: readContext(ctx, breakdown),
         tools: [],
         now: Date.now(),
         session: readSession(pi, ctx),
@@ -218,6 +234,7 @@ export default function piHud(pi: ExtensionAPI): void {
       displaced: false,
       trackSpeed: createSpeedTracker(),
       tools: new Map(),
+      breakdown,
     });
     if (hasTickingElement(config)) {
       current.stopClock = startClock((now) => {
@@ -284,6 +301,12 @@ export default function piHud(pi: ExtensionAPI): void {
     // Most updates come too close together for a reading; keep showing the last one.
     if (speed !== null) update(generation, { speed });
   });
+  // The reply stopped streaming: no fresh reading, so claude-hud would hide the speed.
+  const clearSpeed = () => {
+    if (session?.snapshot.speed !== undefined) update(generation, { speed: undefined });
+  };
+  pi.on("message_end", clearSpeed);
+  pi.on("agent_end", clearSpeed);
 
   pi.on("tool_execution_start", (event) => {
     if (!isLive(generation)) return;
@@ -322,13 +345,12 @@ export default function piHud(pi: ExtensionAPI): void {
     const tokens = usage && (usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite);
     const window = ctx.model?.contextWindow;
     if (!usage || !tokens || !window) return;
-    const breakdown = { input: usage.input, cache: usage.cacheRead + usage.cacheWrite };
-    syncContext(ctx, (s) => (s.liveContext = { tokens, window, percent: (tokens / window) * 100, breakdown }));
+    syncContext(ctx, (s) => (s.liveContext = { tokens, window, percent: (tokens / window) * 100, breakdown: breakdownOf(usage) }));
   });
   pi.on("message_end", (event, ctx) => {
     const usage = replyUsage(event.message);
     syncContext(ctx, (s) => {
-      if (usage?.totalTokens) s.breakdown = { input: usage.input, cache: usage.cacheRead + usage.cacheWrite };
+      if (usage?.totalTokens) s.breakdown = breakdownOf(usage);
     });
   });
   pi.on("agent_start", (_event, ctx) => syncContext(ctx, clearLive));
