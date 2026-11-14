@@ -8,6 +8,8 @@ import {
   type MessageUpdateEvent,
   type ReadonlyFooterDataProvider,
   type SessionEntry,
+  type ToolExecutionEndEvent,
+  type ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
@@ -23,13 +25,13 @@ interface Session {
   generation: number;
   snapshot: HudSnapshot;
   requestRender?: () => void;
-  /** Another extension took the footer: the HUD is dormant until the next session_start. */
+  /** Another extension took the footer: the HUD is Displaced until the next session_start. */
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
   stopClock?: () => void;
   trackSpeed: ReturnType<typeof createSpeedTracker>;
-  git?: GitJob;
-  extra?: GitJob;
+  git?: BackgroundJob;
+  extra?: BackgroundJob;
   footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
@@ -48,6 +50,8 @@ function toolTarget(name: string, args: Record<string, unknown> | undefined): st
   if (typeof value !== "string" || !value) return undefined;
   return name === "bash" && value.length > 30 ? `${value.slice(0, 30)}...` : value;
 }
+
+type Usage = NonNullable<ReturnType<typeof replyUsage>>;
 
 /** A finished-or-streaming reply's usage; error/aborted replies don't describe the context. */
 function replyUsage(message: MessageUpdateEvent["message"]) {
@@ -84,7 +88,7 @@ function modelInfo(model: { name: string; provider: string } | undefined, footer
 }
 
 /** A background job (git, Extra command). */
-interface GitJob {
+interface BackgroundJob {
   trigger(): void;
   stop(): void;
 }
@@ -108,6 +112,7 @@ export default function piHud(pi: ExtensionAPI): void {
   let session: Session | undefined;
   // Set around our own setFooter calls so the dispose() they trigger isn't mistaken for displacement.
   let ownCall = false;
+  const exec = pi.exec.bind(pi);
 
   const setFooter = (ui: ExtensionUIContext, factory: Parameters<ExtensionUIContext["setFooter"]>[0]) => {
     ownCall = true;
@@ -118,7 +123,7 @@ export default function piHud(pi: ExtensionAPI): void {
     }
   };
 
-  /** The shared dormant check: false once the session `gen` has ended or the HUD is Displaced. Every handler and job consults it. */
+  /** The shared liveness check: false once the session `gen` has ended or the HUD is Displaced. Every handler and job consults it. */
   const isLive = (gen: number) => session?.generation === gen && !session.displaced;
 
   const update = (gen: number, patch: Partial<HudSnapshot>) => {
@@ -136,12 +141,9 @@ export default function piHud(pi: ExtensionAPI): void {
   };
 
   const readSession = createSessionReader();
-  const refreshSession = (_event: unknown, ctx: ExtensionContext) => {
-    if (isLive(generation)) update(generation, { session: readSession(pi, ctx), now: Date.now() });
-  };
 
   /** Async git refresh: at most one run in flight, triggers coalesced, runs spaced by the throttle, plus a backstop. */
-  const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: HudConfig["gitStatus"]): GitJob => {
+  const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: HudConfig["gitStatus"]): BackgroundJob => {
     let inFlight = false;
     let pending = false;
     let lastRun = -Infinity;
@@ -154,7 +156,7 @@ export default function piHud(pi: ExtensionAPI): void {
       lastRun = Date.now();
       try {
         const branch = footerData.getGitBranch();
-        const git = branch ? { branch, ...(await getGitStatus(pi.exec.bind(pi), cwd, options)) } : null;
+        const git = branch ? { branch, ...(await getGitStatus(exec, cwd, options)) } : null;
         if (git || session?.snapshot.git) update(gen, { git });
       } catch {
         // Keep the last snapshot; the next trigger retries.
@@ -193,13 +195,13 @@ export default function piHud(pi: ExtensionAPI): void {
   };
 
   /** The Extra command: at most one run at a time, at start, on trigger and on a backstop. Never from render. */
-  const startExtraJob = (gen: number, cmd: string): GitJob => {
+  const startExtraJob = (gen: number, cmd: string): BackgroundJob => {
     let inFlight = false;
     const run = async () => {
       if (!isLive(gen) || inFlight) return;
       inFlight = true;
       try {
-        const extraLabel = await runExtraCmd(pi.exec.bind(pi), cmd);
+        const extraLabel = await runExtraCmd(exec, cmd);
         if (extraLabel !== session?.snapshot.extraLabel) update(gen, { extraLabel });
       } finally {
         inFlight = false;
@@ -269,96 +271,137 @@ export default function piHud(pi: ExtensionAPI): void {
     if (config.extraCommand) current.extra = startExtraJob(current.generation, config.extraCommand);
   });
 
+  // ---- Feature steps: each takes the live session; the handlers below check liveness once. ----
+
+  // Session data: after these events the session's entries or name may have changed.
+  const refreshSession = (ctx: ExtensionContext) => update(generation, { session: readSession(pi, ctx), now: Date.now() });
+
+  // Speed: sampled from the streaming reply. Most updates come too close together for a reading; keep showing the last one.
+  const sampleSpeed = (s: Session, usage: Usage) => {
+    const speed = s.trackSpeed(usage.output, Date.now());
+    if (speed !== null) update(generation, { speed });
+  };
+  // The reply stopped streaming: no fresh reading, so claude-hud would hide the speed.
+  const clearSpeed = (s: Session) => {
+    if (s.snapshot.speed !== undefined) update(generation, { speed: undefined });
+  };
+
+  // Tools: running and recent, by toolCallId.
+  const startTool = (s: Session, event: ToolExecutionStartEvent) => {
+    s.tools.set(event.toolCallId, { name: event.toolName, target: toolTarget(event.toolName, event.args), status: "running" });
+    if (s.tools.size > MAX_TOOLS) s.tools.delete(s.tools.keys().next().value!);
+    update(generation, { tools: [...s.tools.values()] });
+  };
+  const endTool = (s: Session, event: ToolExecutionEndEvent) => {
+    const tool = s.tools.get(event.toolCallId);
+    if (!tool) return;
+    s.tools.set(event.toolCallId, { ...tool, status: event.isError ? "error" : "completed" });
+    update(generation, { tools: [...s.tools.values()] });
+  };
+
+  // Context: getContextUsage() is the base; a streaming reply's usage overrides it until a clearing event.
+  const syncContext = (s: Session, ctx: ExtensionContext) => {
+    const context = s.liveContext ?? readContext(ctx, s.breakdown);
+    // Skip no-op renders: message_update fires per streamed delta, mostly without new usage.
+    if (JSON.stringify(context) !== JSON.stringify(s.snapshot.context)) update(generation, { context });
+  };
+  const streamContext = (s: Session, ctx: ExtensionContext, usage: Usage) => {
+    const tokens = usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+    const window = ctx.model?.contextWindow;
+    if (!tokens || !window) return;
+    s.liveContext = { tokens, window, percent: (tokens / window) * 100, breakdown: breakdownOf(usage) };
+    syncContext(s, ctx);
+  };
+  const endReplyContext = (s: Session, ctx: ExtensionContext, usage: Usage | undefined) => {
+    if (usage?.totalTokens) s.breakdown = breakdownOf(usage);
+    syncContext(s, ctx);
+  };
+  const clearLiveContext = (s: Session, ctx: ExtensionContext) => {
+    s.liveContext = undefined;
+    syncContext(s, ctx);
+  };
+  const resetContext = (s: Session, ctx: ExtensionContext) => {
+    s.breakdown = undefined;
+    clearLiveContext(s, ctx);
+  };
+
+  // ---- Event handlers: one per event, calling each feature's step in turn. ----
+
+  const live = () => (isLive(generation) ? session : undefined);
+
   pi.on("model_select", (event, ctx) => {
-    if (!isLive(generation)) return;
+    const s = live();
+    if (!s) return;
     // ctx.model may still be the previous model here; the event's is the new one. Changing model can clamp the thinking level, so re-read it.
     update(generation, {
-      model: modelInfo(event.model, session!.footerData),
+      model: modelInfo(event.model, s.footerData),
       thinkingLevel: pi.getThinkingLevel(),
       session: readSession(pi, ctx, event.model),
     });
+    clearLiveContext(s, ctx);
   });
   // The run's system prompt options are what the agent actually loaded.
   pi.on("before_agent_start", (event) => {
-    if (!isLive(generation) || !session!.snapshot.environment) return;
+    if (!live()?.snapshot.environment) return;
     const { contextFiles = [], skills = [] } = event.systemPromptOptions;
     update(generation, { environment: readEnvironment(contextFiles.length, skills.length) });
   });
   pi.on("thinking_level_select", (event) => update(generation, { thinkingLevel: event.level }));
 
-  // Events after which the session's entries or name may have changed.
-  pi.on("message_end", refreshSession);
-  pi.on("turn_end", refreshSession);
-  pi.on("agent_end", refreshSession);
-  pi.on("session_compact", refreshSession);
-  pi.on("session_tree", refreshSession);
-  pi.on("session_info_changed", refreshSession);
-
-  pi.on("message_update", (event) => {
-    const usage = replyUsage(event.message);
-    if (!session || !usage) return;
-    const speed = session.trackSpeed(usage.output, Date.now());
-    // Most updates come too close together for a reading; keep showing the last one.
-    if (speed !== null) update(generation, { speed });
+  pi.on("agent_start", (_event, ctx) => {
+    const s = live();
+    if (s) clearLiveContext(s, ctx);
   });
-  // The reply stopped streaming: no fresh reading, so claude-hud would hide the speed.
-  const clearSpeed = () => {
-    if (session?.snapshot.speed !== undefined) update(generation, { speed: undefined });
-  };
-  pi.on("message_end", clearSpeed);
-  pi.on("agent_end", clearSpeed);
-
-  pi.on("tool_execution_start", (event) => {
-    if (!isLive(generation)) return;
-    const { tools } = session!;
-    tools.set(event.toolCallId, { name: event.toolName, target: toolTarget(event.toolName, event.args), status: "running" });
-    if (tools.size > MAX_TOOLS) tools.delete(tools.keys().next().value!);
-    update(generation, { tools: [...tools.values()] });
-  });
-  pi.on("tool_execution_end", (event) => {
-    const tool = isLive(generation) ? session!.tools.get(event.toolCallId) : undefined;
-    if (!tool) return;
-    session!.tools.set(event.toolCallId, { ...tool, status: event.isError ? "error" : "completed" });
-    update(generation, { tools: [...session!.tools.values()] });
-  });
-
-  pi.on("agent_end", () => session?.git?.trigger());
-  pi.on("agent_end", () => session?.extra?.trigger());
-  pi.on("tool_execution_end", () => session?.git?.trigger());
-
-  // Context: getContextUsage() is the base; a streaming reply's usage overrides it until a clearing event.
-  const syncContext = (ctx: ExtensionContext, change: (s: Session) => void = () => {}) => {
-    if (!isLive(generation)) return;
-    change(session!);
-    const context = session!.liveContext ?? readContext(ctx, session!.breakdown);
-    // Skip no-op renders: message_update fires per streamed delta, mostly without new usage.
-    if (JSON.stringify(context) !== JSON.stringify(session!.snapshot.context)) update(generation, { context });
-  };
-  const clearLive = (s: Session) => (s.liveContext = undefined);
-  const resetContext = (s: Session) => {
-    s.liveContext = undefined;
-    s.breakdown = undefined;
-  };
-
   pi.on("message_update", (event, ctx) => {
+    const s = live();
     const usage = replyUsage(event.message);
-    const tokens = usage && (usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite);
-    const window = ctx.model?.contextWindow;
-    if (!usage || !tokens || !window) return;
-    syncContext(ctx, (s) => (s.liveContext = { tokens, window, percent: (tokens / window) * 100, breakdown: breakdownOf(usage) }));
+    if (!s || !usage) return;
+    sampleSpeed(s, usage);
+    streamContext(s, ctx, usage);
   });
   pi.on("message_end", (event, ctx) => {
-    const usage = replyUsage(event.message);
-    syncContext(ctx, (s) => {
-      if (usage?.totalTokens) s.breakdown = breakdownOf(usage);
-    });
+    const s = live();
+    if (!s) return;
+    refreshSession(ctx);
+    clearSpeed(s);
+    endReplyContext(s, ctx, replyUsage(event.message));
   });
-  pi.on("agent_start", (_event, ctx) => syncContext(ctx, clearLive));
-  pi.on("agent_end", (_event, ctx) => syncContext(ctx, clearLive));
-  pi.on("tool_execution_start", (_event, ctx) => syncContext(ctx, clearLive));
-  pi.on("model_select", (_event, ctx) => syncContext(ctx, clearLive));
-  pi.on("session_compact", (_event, ctx) => syncContext(ctx, resetContext));
-  pi.on("session_tree", (_event, ctx) => syncContext(ctx, resetContext));
+  pi.on("tool_execution_start", (event, ctx) => {
+    const s = live();
+    if (!s) return;
+    startTool(s, event);
+    clearLiveContext(s, ctx);
+  });
+  pi.on("tool_execution_end", (event) => {
+    const s = live();
+    if (!s) return;
+    endTool(s, event);
+    s.git?.trigger();
+  });
+  pi.on("turn_end", (_event, ctx) => {
+    if (live()) refreshSession(ctx);
+  });
+  pi.on("agent_end", (_event, ctx) => {
+    const s = live();
+    if (!s) return;
+    refreshSession(ctx);
+    clearSpeed(s);
+    s.git?.trigger();
+    s.extra?.trigger();
+    clearLiveContext(s, ctx);
+  });
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (live()) refreshSession(ctx);
+  });
+  // Compaction and tree navigation replace the context the breakdown described.
+  const onContextReplaced = (_event: unknown, ctx: ExtensionContext) => {
+    const s = live();
+    if (!s) return;
+    refreshSession(ctx);
+    resetContext(s, ctx);
+  };
+  pi.on("session_compact", onContextReplaced);
+  pi.on("session_tree", onContextReplaced);
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
