@@ -59,3 +59,10 @@ test("en renders English labels, and a zh render does not leak into the next cal
   assert.ok(text.includes("Cache ⏱ expired"), text);
   assert.ok(text.includes("Cost $5.47"), text);
 });
+
+test("zh renders the Environment line counts in Chinese", () => {
+  const config: HudConfig = { ...DEFAULT_CONFIG, language: "zh", display: { ...DEFAULT_CONFIG.display, showConfigCounts: true } };
+  const environment = { contextFiles: 2, skills: 5, prompts: 1, mcps: 3 };
+  const lines = renderHud({ ...snapshot, model: null, context: null, environment }, config, 200).map(strip);
+  assert.ok(lines.includes("2 AGENTS.md | 5 技能 | 1 提示词 | 3 MCPs"), lines.join("\n"));
+});
