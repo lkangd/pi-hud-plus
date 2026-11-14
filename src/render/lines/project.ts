@@ -48,6 +48,11 @@ export function renderVersion({ snapshot, config }: RenderContext): string | nul
   return labelColor(`pi v${snapshot.version}`, config.colors);
 }
 
+/** The Extra command's label, already sanitized by runExtraCmd. */
+export function renderExtraLabel({ snapshot, config }: RenderContext): string | null {
+  return snapshot.extraLabel ? labelColor(snapshot.extraLabel, config.colors) : null;
+}
+
 /** The cwd trimmed to `pathLevels` segments. */
 export function renderProjectPath({ snapshot, config }: RenderContext): string | null {
   if (!config.display.showProject || !snapshot.cwd) return null;
@@ -66,12 +71,12 @@ export function withCustomLine(parts: string[], { config }: RenderContext): stri
 }
 
 export function renderProjectLine(ctx: RenderContext): string | null {
-  // The Extra command goes after the version, in claude-hud's order.
   const parts = [
     renderModelBadge(ctx),
     ...withGit(renderProjectPath(ctx), renderGitPart(ctx), ctx.config),
     renderSessionName(ctx),
     renderVersion(ctx),
+    renderExtraLabel(ctx),
     renderDuration(ctx),
     renderCost(ctx),
     renderSpeed(ctx),

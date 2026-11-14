@@ -42,6 +42,10 @@ export interface HudSnapshot {
   session?: HudSession;
   /** Output tokens/s of the reply streaming now (or the last one). */
   speed?: number;
+  /** The Extra command's last label; null/absent = off, failed or not run yet. */
+  extraLabel?: string | null;
+  /** Other extensions' statuses by key, as footerData.getExtensionStatuses() gives them. */
+  extensionStatuses?: ReadonlyMap<string, string>;
   /** System RAM, sampled on the clock tick. Absent or null: off or not sampled yet. */
   memory?: MemoryInfo | null;
   /** What shapes the agent's context. Absent: config counts off. */

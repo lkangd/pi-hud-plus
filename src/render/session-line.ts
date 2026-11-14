@@ -2,7 +2,7 @@ import type { RenderContext } from "../types.ts";
 import { renderEnvironmentLine } from "./lines/environment.ts";
 import { renderContextParts } from "./lines/identity.ts";
 import { renderCompactGitPart, withGit } from "./lines/git.ts";
-import { renderModelBadge, renderProjectPath, renderVersion, withCustomLine } from "./lines/project.ts";
+import { renderExtraLabel, renderModelBadge, renderProjectPath, renderVersion, withCustomLine } from "./lines/project.ts";
 import { renderCost, renderSessionName, renderSessionTokensPart, renderSpeed } from "./lines/session-stats.ts";
 import { renderDuration, renderSessionTimeLine } from "./lines/session-time.ts";
 import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
@@ -32,6 +32,7 @@ export function renderSessionLine(ctx: RenderContext): string | null {
     renderPromptCacheLine(ctx),
     renderCost(ctx),
     renderSpeed(ctx),
+    renderExtraLabel(ctx),
   ]) {
     if (part) parts.push(part);
   }
