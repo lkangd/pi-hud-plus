@@ -281,7 +281,7 @@ export function mergeConfig(userConfig: unknown): HudConfig {
     bool(display[key], D.display[key]);
 
   return {
-    language: oneOf(user.language, ["en", "zh", "zh-Hans"] as const, D.language),
+    language: user.language === "zh" ? "zh-Hans" : oneOf(user.language, ["en", "zh-Hans"] as const, D.language),
     lineLayout: oneOf(user.lineLayout, ["compact", "expanded"] as const, D.lineLayout),
     showSeparators: bool(user.showSeparators, D.showSeparators),
     pathLevels: oneOf(user.pathLevels, [1, 2, 3] as const, D.pathLevels),

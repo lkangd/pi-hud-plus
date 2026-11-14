@@ -88,8 +88,8 @@ test("booleans keep explicit values and fall back to the default otherwise", () 
   assert.equal(config.display.showProject, true);
 });
 
-test("language accepts en, zh and zh-Hans only", () => {
-  assert.equal(mergeConfig({ language: "zh" }).language, "zh");
+test("language accepts en, zh and zh-Hans only, canonicalising zh to zh-Hans", () => {
+  assert.equal(mergeConfig({ language: "zh" }).language, "zh-Hans");
   assert.equal(mergeConfig({ language: "zh-Hans" }).language, "zh-Hans");
   assert.equal(mergeConfig({ language: "fr" }).language, "en");
 });

@@ -1,12 +1,12 @@
 import type { Language, MessageKey, Messages } from "./types.ts";
 import { en } from "./en.ts";
+import { zhHans } from "./zh-Hans.ts";
 
 export type { Language, MessageKey, Messages };
 
 type CanonicalLanguage = "en" | "zh-Hans";
 
-// shortcut: only the en table is ported, so zh-Hans falls back to en until the i18n ticket adds its table.
-const locales: Partial<Record<CanonicalLanguage, Messages>> = { en };
+const locales: Record<CanonicalLanguage, Messages> = { en, "zh-Hans": zhHans };
 
 // Resolve short language tags to canonical BCP 47 forms.
 // Based on CLDR likely subtags: zh → zh-Hans-CN
