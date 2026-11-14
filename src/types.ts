@@ -1,5 +1,6 @@
 import type { HudConfig } from "./config.ts";
 import type { GitStatus } from "./git.ts";
+import type { MemoryInfo } from "./memory.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 /** pi's ThinkingLevel ("off" … "max"); pi-coding-agent doesn't re-export the type. */
@@ -45,6 +46,8 @@ export interface HudSnapshot {
   extraLabel?: string | null;
   /** Other extensions' statuses by key, as footerData.getExtensionStatuses() gives them. */
   extensionStatuses?: ReadonlyMap<string, string>;
+  /** System RAM, sampled on the clock tick. Absent or null: off or not sampled yet. */
+  memory?: MemoryInfo | null;
 }
 
 /** Token totals and cost summed over a session, like pi's built-in footer. */

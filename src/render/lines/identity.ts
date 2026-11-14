@@ -5,7 +5,7 @@ import { coloredBar, getContextColor, label, RESET } from "../colors.ts";
 import { progressLabel } from "./label-align.ts";
 
 /** claude-hud's adaptive bar width, keyed on the HUD width instead of the terminal's. */
-function barWidth(width: number): number {
+export function barWidth(width: number): number {
   if (width >= 100) return 10;
   if (width >= 60) return 6;
   return 4;

@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piHud from "../src/index.ts";
+import { _setMemoryReaderForTests } from "../src/memory.ts";
 
 // Isolate from the real ~/.pi/agent: getAgentDir() honours PI_CODING_AGENT_DIR.
 const agentDir = mkdtempSync(join(tmpdir(), "pi-hud-agent-"));
@@ -781,4 +782,94 @@ test("other extensions' statuses render on a dimmed last Line, read from footerD
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
   statuses.set("lint", "lint: ok");
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project", "lint: ok"]);
+});
+
+// ---- Tools, memory, prompt cache ----
+
+test("the tools line follows tool_execution_start/end", async () => {
+  const { emit } = fakePi();
+  const { ctx, footer } = fakeCtx({ cwd: projectWith({ showTools: true, showModel: false, showProject: false }) });
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80), [], "nothing until a tool runs");
+
+  await emit("tool_execution_start", { toolCallId: "1", toolName: "read", args: { path: "src/index.ts" } }, ctx);
+  await emit("tool_execution_start", { toolCallId: "2", toolName: "bash", args: { command: "npm test" } }, ctx);
+  assert.deepEqual(footer()!.render(120).map(strip), ["◐ read: src/index.ts | ◐ bash: npm test"]);
+
+  await emit("tool_execution_end", { toolCallId: "1", toolName: "read", result: {}, isError: false }, ctx);
+  await emit("tool_execution_end", { toolCallId: "2", toolName: "bash", result: {}, isError: true }, ctx);
+  await emit("tool_execution_start", { toolCallId: "3", toolName: "read", args: { path: "a.ts" } }, ctx);
+  await emit("tool_execution_end", { toolCallId: "3", toolName: "read", result: {}, isError: false }, ctx);
+  assert.deepEqual(footer()!.render(120).map(strip), ["✓ read ×2 | ✓ bash ×1"]);
+});
+
+test("tools keep the latest 20 and reset on a new session", async () => {
+  const { emit } = fakePi();
+  const display = { showTools: true, showModel: false, showProject: false, toolsMaxVisible: 0 };
+  const { ctx, footer } = fakeCtx({ cwd: projectWith(display) });
+  await emit("session_start", { reason: "startup" }, ctx);
+  for (let i = 0; i < 25; i++) {
+    await emit("tool_execution_start", { toolCallId: `${i}`, toolName: i < 5 ? "old" : "new", args: {} }, ctx);
+    await emit("tool_execution_end", { toolCallId: `${i}`, toolName: "x", result: {}, isError: false }, ctx);
+  }
+  assert.deepEqual(footer()!.render(120).map(strip), ["✓ new ×20"]);
+  await emit("session_start", { reason: "new" }, ctx);
+  assert.deepEqual(footer()!.render(120), []);
+});
+
+test("memory is sampled on the clock tick, never in render", async () => {
+  mock.timers.enable({ apis: ["setInterval", "Date"] });
+  let reads = 0;
+  let usedGb = 4;
+  _setMemoryReaderForTests(() => (reads++, { totalBytes: 16 * 1024 ** 3, freeBytes: (16 - usedGb) * 1024 ** 3 }));
+  try {
+    const { emit } = fakePi();
+    const { ctx, footer } = fakeCtx({ cwd: projectWith({ showMemoryUsage: true, showModel: false, showProject: false }) });
+    await emit("session_start", { reason: "startup" }, ctx);
+    mock.timers.tick(1000);
+    await flush();
+    assert.deepEqual(footer()!.render(120).map(strip), ["Approx RAM ███░░░░░░░ 4.0 GB / 16 GB (25%)"]);
+    usedGb = 8;
+    const before = reads;
+    footer()!.render(120);
+    assert.equal(reads, before, "render doesn't sample");
+    mock.timers.tick(1000);
+    await flush();
+    assert.deepEqual(footer()!.render(120).map(strip), ["Approx RAM █████░░░░░ 8.0 GB / 16 GB (50%)"]);
+    await emit("session_shutdown", { reason: "quit" }, ctx);
+    const afterShutdown = reads;
+    mock.timers.tick(5000);
+    assert.equal(reads, afterShutdown, "stops sampling on shutdown");
+  } finally {
+    _setMemoryReaderForTests(null);
+  }
+});
+
+test("memory isn't sampled when off", async () => {
+  mock.timers.enable({ apis: ["setInterval", "Date"] });
+  let reads = 0;
+  _setMemoryReaderForTests(() => (reads++, { totalBytes: 1, freeBytes: 1 }));
+  try {
+    const { emit } = fakePi();
+    const { ctx } = fakeCtx({ cwd: projectWith({ showDuration: true }) });
+    await emit("session_start", { reason: "startup" }, ctx);
+    mock.timers.tick(3000);
+    assert.equal(reads, 0);
+  } finally {
+    _setMemoryReaderForTests(null);
+  }
+});
+
+test("the prompt cache counts down from the last reply on the clock", async () => {
+  const lastReply = new Date(2026, 4, 8, 11, 30).getTime();
+  mock.timers.enable({ apis: ["setInterval", "Date"], now: lastReply + 45_000 });
+  const entries = [entry({ type: "message", message: { role: "assistant", usage: usage(1, 1, 0, 0, 0) } }, new Date(lastReply).toISOString())];
+  const { emit } = fakePi();
+  const cwd = projectWith({ showPromptCache: true, showModel: false, showProject: false });
+  const { ctx, tui, footer } = fakeCtx({ cwd, sessionManager: fakeSessionManager(entries) });
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Cache ⏱ 4m 15s"]);
+  mock.timers.tick(5000);
+  assert.equal(tui.renders, 5, "the prompt cache starts the clock");
+  assert.deepEqual(footer()!.render(80).map(strip), ["Cache ⏱ 4m 10s"]);
 });
