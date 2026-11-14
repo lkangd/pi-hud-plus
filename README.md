@@ -185,7 +185,7 @@ To see the HUD, disable the other footer extension with `pi config`, then start 
 
 ## Language
 
-`"language": "zh-Hans"` switches the HUD's labels to Simplified Chinese (`上下文`, `3分钟前`, …). `"zh"` works too. The default is `"en"`. The language is set only in config; pi-hud-plus doesn't detect your locale.
+`"language": "zh-Hans"` switches the HUD's labels to Simplified Chinese (`上下文`, `3m前`, …). `"zh"` works too. The default is `"en"`. The language is set only in config; pi-hud-plus doesn't detect your locale.
 
 ## Differences from claude-hud
 
@@ -197,6 +197,10 @@ To see the HUD, disable the other footer extension with `pi config`, then start 
 - **Changed defaults**: `mergeGroups` defaults to `[]`, and `elementOrder` has no `usage`, `agents`, `todos` or `addedDirs`.
 - **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config, and never read from the project file) and `display.showExtensionStatuses`.
 - **No setup command**: you configure the HUD by editing the JSON files. There's no `/claude-hud:setup`-style command, and no config file watching.
+- **No git files Line**: with `showFileStats` on, claude-hud adds a Line listing the changed files; pi-hud-plus shows only the counts in the git Element.
+- **No branch link**: claude-hud links the branch name to its remote (`branchUrl`) with a terminal hyperlink; pi-hud-plus shows plain text.
+- **`max` thinking level**: pi's `max` level, which claude-hud has no equivalent for, shows as `◕` like `xhigh`.
+- **Chinese relative times**: keep claude-hud's unit style, so `3m前`, not `3分钟前`.
 - A pasted claude-hud config still loads: fields that are unknown or have been dropped are ignored.
 
 ## Credits and license
