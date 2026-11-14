@@ -65,7 +65,8 @@ function fakeCtx(overrides: object = {}, footerData = fakeFooterData(null)) {
     mode: "tui",
     hasUI: true,
     cwd: "/home/me/code/my-project",
-    model: { name: "Claude Opus 4.6", provider: "anthropic" },
+    model: { name: "Claude Opus 4.6", provider: "anthropic", contextWindow: 200_000 },
+    getContextUsage: () => undefined as object | undefined,
     ui: {
       // Like pi: dispose the current footer, then install the new one (last writer wins).
       setFooter(factory: ((...args: any[]) => Footer) | undefined) {
@@ -351,4 +352,97 @@ test("nothing runs while Displaced or after shutdown", async () => {
   await flush();
   assert.equal(shut.git.calls.length, 2);
   assert.equal(shut.footerData.listeners.size, 0);
+});
+
+/** A ctx whose getContextUsage() returns whatever `usage.current` is. */
+function contextCtx(tokens: number | null) {
+  const usage = { current: { tokens, contextWindow: 200_000, percent: tokens === null ? null : (tokens / 200_000) * 100 } };
+  const set = (next: number | null) => {
+    usage.current = { tokens: next, contextWindow: 200_000, percent: next === null ? null : (next / 200_000) * 100 };
+  };
+  const fake = fakeCtx({ getContextUsage: () => usage.current });
+  // The context value, without the label and bar.
+  const value = () => fake.footer()!.render(80).map(strip)[1]?.replace(/^Context [█░]+ /, "");
+  return { ...fake, set, value };
+}
+
+const reply = (usage: object, stopReason = "pending") => ({
+  message: { role: "assistant", stopReason, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...usage } },
+});
+
+test("the context bar shows ctx.getContextUsage(), refreshed on message_end, agent_end, compaction and model change", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.equal(value(), "10%");
+  const refreshes: [string, object][] = [
+    ["message_end", reply({ totalTokens: 1 }, "stop")],
+    ["agent_end", { messages: [] }],
+    ["session_compact", {}],
+    ["model_select", { model: { name: "Claude Opus 4.6" }, source: "set" }],
+  ];
+  for (const [i, [event, payload]] of refreshes.entries()) {
+    set(40_000 + i * 20_000);
+    await emit(event, payload, ctx);
+    assert.equal(value(), `${20 + i * 10}%`, event);
+  }
+});
+
+test("compaction's unknown token count renders ?", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(150_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  set(null);
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "?");
+});
+
+test("a streaming reply's usage overrides the context until agent start/end, tool start, model select, compaction or tree navigation", async () => {
+  const { emit } = fakePi();
+  const { ctx, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  const clears: [string, object][] = [
+    ["agent_start", {}],
+    ["agent_end", { messages: [] }],
+    ["tool_execution_start", { toolCallId: "1", toolName: "bash", args: {} }],
+    ["model_select", { model: { name: "Claude Opus 4.6" }, source: "set" }],
+    ["session_compact", {}],
+    ["session_tree", { newLeafId: null, oldLeafId: null }],
+  ];
+  for (const [event, payload] of clears) {
+    await emit("message_update", reply({ totalTokens: 60_000 }), ctx);
+    assert.equal(value(), "30%", `override before ${event}`);
+    await emit("message_end", reply({ totalTokens: 60_000 }, "stop"), ctx);
+    assert.equal(value(), "30%", `override survives message_end before ${event}`);
+    await emit(event, payload, ctx);
+    assert.equal(value(), "10%", event);
+  }
+});
+
+test("the override sums usage parts when totalTokens is missing, and skips error/aborted and empty usage", async () => {
+  const { emit } = fakePi();
+  const { ctx, value } = contextCtx(20_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("message_update", reply({ input: 80_000 }, "error"), ctx);
+  await emit("message_update", reply({ input: 80_000 }, "aborted"), ctx);
+  await emit("message_update", reply({}), ctx);
+  await emit("message_update", { message: { role: "user", content: "hi" } }, ctx);
+  assert.equal(value(), "10%");
+  await emit("message_update", reply({ input: 50_000, output: 1_000, cacheRead: 7_000, cacheWrite: 2_000 }), ctx);
+  assert.equal(value(), "30%");
+});
+
+test("the token breakdown comes from the latest reply and clears on compaction", async () => {
+  const { emit } = fakePi();
+  const { ctx, set, value } = contextCtx(172_000);
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("message_end", reply({ input: 150_000, cacheRead: 15_000, cacheWrite: 5_000, totalTokens: 172_000 }, "stop"), ctx);
+  assert.equal(value(), "86% (in: 150k, cache: 20k)");
+  await emit("message_update", reply({ input: 160_000, cacheRead: 15_000, totalTokens: 180_000 }), ctx);
+  assert.equal(value(), "90% (in: 160k, cache: 15k)");
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "86%");
+  set(null);
+  await emit("session_compact", {}, ctx);
+  assert.equal(value(), "?");
 });

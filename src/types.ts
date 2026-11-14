@@ -8,12 +8,21 @@ export interface HudTool {
   status: "running" | "completed" | "error";
 }
 
+export interface HudContext {
+  tokens: number | null;
+  window: number;
+  /** 0-100, unrounded. */
+  percent: number | null;
+  /** The latest reply's prompt split, for the token breakdown. */
+  breakdown?: { input: number; cache: number };
+}
+
 /** HUD snapshot: everything the render core needs. The pi adapter keeps it up to date. */
 export interface HudSnapshot {
   model: { name: string } | null;
   cwd: string;
-  /** null = no context usage to show yet. */
-  context: { percent: number } | null;
+  /** null = no context usage to show yet. tokens/percent null = unknown (right after compaction). */
+  context: HudContext | null;
   /** Running and recent tools, oldest first. */
   tools: HudTool[];
   /** Absent or null: not a repo, git off, or not fetched yet. */

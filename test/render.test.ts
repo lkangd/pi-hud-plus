@@ -8,7 +8,7 @@ import type { HudSnapshot } from "../src/types.ts";
 const snapshot: HudSnapshot = {
   model: { name: "Claude Opus 4.6" },
   cwd: "/home/me/code/my-project",
-  context: { percent: 23 },
+  context: { tokens: 46_000, window: 200_000, percent: 23 },
   tools: [],
 };
 const withTools: HudSnapshot = { ...snapshot, tools: [{ name: "Read", status: "completed" }] };
@@ -157,4 +157,41 @@ test("the Custom line can't inject escape codes", () => {
   const [line] = renderHud(snapshot, cfg({ display: { customLine: "a\x1b]52;c;evil\x07b" } }), 80);
   assert.ok(!line.includes("\x1b]52"), JSON.stringify(line));
   assert.ok(strip(line).endsWith("│ a]52;c;evilb"), JSON.stringify(strip(line)));
+});
+
+test("unknown context tokens (right after compaction) render ? with an empty bar, never 0%", () => {
+  const unknown = { ...snapshot, context: { tokens: null, window: 200_000, percent: null } };
+  assert.equal(render(unknown)[1], "Context ░░░░░░ ?");
+  assert.equal(render(unknown, { display: { contextValue: "both" } })[1], "Context ░░░░░░ ?");
+});
+
+test("contextValue modes express context as in claude-hud", () => {
+  const value = (contextValue: HudConfig["display"]["contextValue"], s = snapshot) =>
+    render(s, { display: { contextValue, showContextBar: false } })[1];
+  assert.equal(value("percent"), "Context 23%");
+  assert.equal(value("tokens"), "Context 46k/200k");
+  assert.equal(value("remaining"), "Context 77%");
+  assert.equal(value("both"), "Context 23% (46k/200k)");
+  const big = { ...snapshot, context: { tokens: 1_234_567, window: 2_000_000, percent: 61.7 } };
+  assert.equal(value("tokens", big), "Context 1.2M/2.0M");
+  assert.equal(value("both", { ...snapshot, context: { tokens: 512, window: 200_000, percent: 0.256 } }), "Context 0% (512/200k)");
+});
+
+test("the context value is coloured by the warning and critical thresholds", () => {
+  const raw = (percent: number, display: ConfigPatch["display"] = {}) =>
+    renderHud({ ...snapshot, context: { tokens: 1, window: 100, percent } }, cfg({ display }), 80)[1];
+  assert.ok(raw(69).includes(`\x1b[32m69%`));
+  assert.ok(raw(70).includes(`\x1b[33m70%`));
+  assert.ok(raw(85).includes(`\x1b[31m85%`));
+  assert.ok(raw(50, { contextWarningThreshold: 40, contextCriticalThreshold: 50 }).includes(`\x1b[31m50%`));
+  assert.ok(raw(45, { contextWarningThreshold: 40, contextCriticalThreshold: 50 }).includes(`\x1b[33m45%`));
+});
+
+test("the token breakdown shows at critical context, unless showTokenBreakdown is off", () => {
+  const high = { ...snapshot, context: { tokens: 172_000, window: 200_000, percent: 86, breakdown: { input: 150_000, cache: 20_000 } } };
+  assert.equal(render(high)[1], "Context █████░ 86% (in: 150k, cache: 20k)");
+  assert.equal(render(high, { lineLayout: "compact" })[0], "[Claude Opus 4.6] █████░ 86% (in: 150k, cache: 20k) | my-project");
+  assert.equal(render(high, { display: { showTokenBreakdown: false } })[1], "Context █████░ 86%");
+  assert.equal(render({ ...high, context: { ...high.context, percent: 84 } })[1], "Context █████░ 84%");
+  assert.equal(render({ ...high, context: { ...high.context, breakdown: undefined } })[1], "Context █████░ 86%");
 });

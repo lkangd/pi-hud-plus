@@ -3,12 +3,13 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionUIContext,
+  type MessageUpdateEvent,
   type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { getGitStatus } from "./git.ts";
 import { renderHud } from "./render/index.ts";
-import type { HudSnapshot } from "./types.ts";
+import type { HudContext, HudSnapshot } from "./types.ts";
 
 interface Session {
   generation: number;
@@ -18,6 +19,24 @@ interface Session {
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
   git?: GitJob;
+  /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
+  liveContext?: HudContext;
+  /** The latest reply's prompt split, for the token breakdown. */
+  // shortcut: only replies seen since session_start feed it, so a resumed session shows no breakdown until the next reply; seed it from sessionManager's last assistant entry if that matters.
+  breakdown?: HudContext["breakdown"];
+}
+
+/** A finished-or-streaming reply's usage; error/aborted replies don't describe the context. */
+function replyUsage(message: MessageUpdateEvent["message"]) {
+  if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") return undefined;
+  return message.usage;
+}
+
+function readContext(ctx: ExtensionContext, breakdown: HudContext["breakdown"]): HudContext | null {
+  const usage = ctx.getContextUsage();
+  if (!usage) return null;
+  const { tokens, contextWindow: window, percent } = usage;
+  return tokens === null || !breakdown ? { tokens, window, percent } : { tokens, window, percent, breakdown };
 }
 
 interface GitJob {
@@ -118,7 +137,7 @@ export default function piHud(pi: ExtensionAPI): void {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
       generation: ++generation,
-      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd, context: null, tools: [] },
+      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd, context: readContext(ctx, undefined), tools: [] },
       displaced: false,
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
@@ -148,6 +167,41 @@ export default function piHud(pi: ExtensionAPI): void {
 
   pi.on("agent_end", () => session?.git?.trigger());
   pi.on("tool_execution_end", () => session?.git?.trigger());
+
+  // Context: getContextUsage() is the base; a streaming reply's usage overrides it until a clearing event.
+  const syncContext = (ctx: ExtensionContext, change: (s: Session) => void = () => {}) => {
+    if (!isLive(generation)) return;
+    change(session!);
+    const context = session!.liveContext ?? readContext(ctx, session!.breakdown);
+    // Skip no-op renders: message_update fires per streamed delta, mostly without new usage.
+    if (JSON.stringify(context) !== JSON.stringify(session!.snapshot.context)) update(generation, { context });
+  };
+  const clearLive = (s: Session) => (s.liveContext = undefined);
+  const resetContext = (s: Session) => {
+    s.liveContext = undefined;
+    s.breakdown = undefined;
+  };
+
+  pi.on("message_update", (event, ctx) => {
+    const usage = replyUsage(event.message);
+    const tokens = usage && (usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite);
+    const window = ctx.model?.contextWindow;
+    if (!usage || !tokens || !window) return;
+    const breakdown = { input: usage.input, cache: usage.cacheRead + usage.cacheWrite };
+    syncContext(ctx, (s) => (s.liveContext = { tokens, window, percent: (tokens / window) * 100, breakdown }));
+  });
+  pi.on("message_end", (event, ctx) => {
+    const usage = replyUsage(event.message);
+    syncContext(ctx, (s) => {
+      if (usage?.totalTokens) s.breakdown = { input: usage.input, cache: usage.cacheRead + usage.cacheWrite };
+    });
+  });
+  pi.on("agent_start", (_event, ctx) => syncContext(ctx, clearLive));
+  pi.on("agent_end", (_event, ctx) => syncContext(ctx, clearLive));
+  pi.on("tool_execution_start", (_event, ctx) => syncContext(ctx, clearLive));
+  pi.on("model_select", (_event, ctx) => syncContext(ctx, clearLive));
+  pi.on("session_compact", (_event, ctx) => syncContext(ctx, resetContext));
+  pi.on("session_tree", (_event, ctx) => syncContext(ctx, resetContext));
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
