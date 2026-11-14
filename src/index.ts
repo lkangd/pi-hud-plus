@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
+import { runExtraCmd } from "./extra-cmd.ts";
 import { getGitStatus } from "./git.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
@@ -25,6 +26,7 @@ interface Session {
   stopClock?: () => void;
   trackSpeed: ReturnType<typeof createSpeedTracker>;
   git?: GitJob;
+  extra?: GitJob;
   footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
@@ -52,6 +54,7 @@ function modelInfo(model: { name: string; provider: string } | undefined, footer
   return footerData && footerData.getAvailableProviderCount() > 1 ? { name: model.name, provider: model.provider } : { name: model.name };
 }
 
+/** A background job (git, Extra command). */
 interface GitJob {
   trigger(): void;
   stop(): void;
@@ -59,6 +62,7 @@ interface GitJob {
 
 const GIT_THROTTLE_MS = 2000;
 const GIT_BACKSTOP_MS = 30_000;
+const EXTRA_BACKSTOP_MS = 30_000;
 
 // On globalThis, not module scope: /reload re-imports this module, and the notice must fire once per pi process.
 const NOTICE_SHOWN = Symbol.for("pi-hud-plus.displacedNoticeShown");
@@ -151,6 +155,25 @@ export default function piHud(pi: ExtensionAPI): void {
     };
   };
 
+  /** The Extra command: at most one run at a time, at start, on trigger and on a backstop. Never from render. */
+  const startExtraJob = (gen: number, cmd: string): GitJob => {
+    let inFlight = false;
+    const run = async () => {
+      if (!isLive(gen) || inFlight) return;
+      inFlight = true;
+      try {
+        const extraLabel = await runExtraCmd(pi.exec.bind(pi), cmd);
+        if (extraLabel !== session?.snapshot.extraLabel) update(gen, { extraLabel });
+      } finally {
+        inFlight = false;
+      }
+    };
+    const backstop = setInterval(run, EXTRA_BACKSTOP_MS);
+    backstop.unref?.();
+    void run();
+    return { trigger: () => void run(), stop: () => clearInterval(backstop) };
+  };
+
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
@@ -176,13 +199,15 @@ export default function piHud(pi: ExtensionAPI): void {
       current.snapshot = { ...current.snapshot, model: modelInfo(ctx.model, footerData) };
       if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, config.gitStatus);
       return {
-        render: (width) => renderHud(current.snapshot, config, width),
+        // Statuses are read live: pi requests a render whenever an extension sets one.
+        render: (width) => renderHud({ ...current.snapshot, extensionStatuses: footerData.getExtensionStatuses() }, config, width),
         invalidate() {},
         dispose() {
           if (ownCall || current.displaced) return;
           current.displaced = true;
           current.stopClock?.();
           current.git?.stop();
+          current.extra?.stop();
           current.displacedNotice = setTimeout(() => {
             if (globals[NOTICE_SHOWN]) return;
             globals[NOTICE_SHOWN] = true;
@@ -191,6 +216,7 @@ export default function piHud(pi: ExtensionAPI): void {
         },
       };
     });
+    if (config.extraCommand) current.extra = startExtraJob(current.generation, config.extraCommand);
   });
 
   pi.on("model_select", (event, ctx) => {
@@ -221,6 +247,7 @@ export default function piHud(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", () => session?.git?.trigger());
+  pi.on("agent_end", () => session?.extra?.trigger());
   pi.on("tool_execution_end", () => session?.git?.trigger());
 
   // Context: getContextUsage() is the base; a streaming reply's usage overrides it until a clearing event.
@@ -264,6 +291,7 @@ export default function piHud(pi: ExtensionAPI): void {
     clearTimeout(displacedNotice);
     stopClock?.();
     session.git?.stop();
+    session.extra?.stop();
     session = undefined;
     generation++;
     // Only while we still own the footer: otherwise this would wipe the other extension's footer.

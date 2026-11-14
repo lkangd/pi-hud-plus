@@ -122,6 +122,17 @@ function collectActivityLines(ctx: RenderContext): string[] {
   return toolsLine ? [toolsLine] : [];
 }
 
+/** Other extensions' statuses on one dimmed Line, sorted by key and flattened like pi's footer. */
+function renderExtensionStatusLine({ snapshot, config }: RenderContext): string | null {
+  if (!config.display.showExtensionStatuses || !snapshot.extensionStatuses) return null;
+  const line = [...snapshot.extensionStatuses]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, text]) => text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+  return line ? dim(line) : null;
+}
+
 /** Render core: pure, no pi imports beyond pi-tui width helpers. Ported from claude-hud's render/index. */
 export function renderHud(snapshot: HudSnapshot, config: HudConfig, width: number): string[] {
   if (width <= 0) return [];
@@ -157,6 +168,10 @@ export function renderHud(snapshot: HudSnapshot, config: HudConfig, width: numbe
 
     lines.push(...activityLines);
   }
+
+  // Not part of elementOrder: always last, after the Custom line.
+  const statusLine = renderExtensionStatusLine(ctx);
+  if (statusLine) lines.push(statusLine);
 
   // pi lays out each Line itself, so never let one wrap.
   return lines.flatMap((line) => line.split("\n")).map((line) => truncateToWidth(line, width, "…"));

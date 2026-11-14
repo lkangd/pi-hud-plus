@@ -41,6 +41,10 @@ export interface HudSnapshot {
   session?: HudSession;
   /** Output tokens/s of the reply streaming now (or the last one). */
   speed?: number;
+  /** The Extra command's last label; null/absent = off, failed or not run yet. */
+  extraLabel?: string | null;
+  /** Other extensions' statuses by key, as footerData.getExtensionStatuses() gives them. */
+  extensionStatuses?: ReadonlyMap<string, string>;
 }
 
 /** Token totals and cost summed over a session, like pi's built-in footer. */
