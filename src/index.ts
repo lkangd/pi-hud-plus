@@ -1,6 +1,9 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig } from "./config.ts";
 import { renderHud } from "./render/index.ts";
+import { createSessionReader } from "./session.ts";
+import { createSpeedTracker } from "./speed-tracker.ts";
 import type { HudSnapshot } from "./types.ts";
 
 interface Session {
@@ -10,6 +13,8 @@ interface Session {
   /** Another extension took the footer: the HUD is dormant until the next session_start. */
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
+  stopClock?: () => void;
+  trackSpeed: ReturnType<typeof createSpeedTracker>;
 }
 
 // On globalThis, not module scope: /reload re-imports this module, and the notice must fire once per pi process.
@@ -46,14 +51,28 @@ export default function piHud(pi: ExtensionAPI): void {
     session!.requestRender?.();
   };
 
+  const readSession = createSessionReader();
+  const refreshSession = (_event: unknown, ctx: ExtensionContext) => {
+    if (isLive(generation)) update(generation, { session: readSession(pi, ctx), now: Date.now() });
+  };
+
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
       generation: ++generation,
-      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd, context: null, tools: [] },
+      snapshot: {
+        model: ctx.model ? { name: ctx.model.name } : null,
+        cwd: ctx.cwd,
+        context: null,
+        tools: [],
+        now: Date.now(),
+        session: readSession(pi, ctx),
+      },
       displaced: false,
+      trackSpeed: createSpeedTracker(),
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
+    if (hasTickingElement(config)) current.stopClock = startClock((now) => update(current.generation, { now }));
     setFooter(ctx.ui, (tui) => {
       current.requestRender = () => tui.requestRender();
       return {
@@ -62,6 +81,7 @@ export default function piHud(pi: ExtensionAPI): void {
         dispose() {
           if (ownCall || current.displaced) return;
           current.displaced = true;
+          current.stopClock?.();
           current.displacedNotice = setTimeout(() => {
             if (globals[NOTICE_SHOWN]) return;
             globals[NOTICE_SHOWN] = true;
@@ -72,14 +92,32 @@ export default function piHud(pi: ExtensionAPI): void {
     });
   });
 
-  pi.on("model_select", (event) => {
-    update(generation, { model: { name: event.model.name } });
+  pi.on("model_select", (event, ctx) => {
+    if (!isLive(generation)) return;
+    // ctx.model may still be the previous model here; the event's is the new one.
+    update(generation, { model: { name: event.model.name }, session: readSession(pi, ctx, event.model) });
+  });
+
+  // Events after which the session's entries or name may have changed.
+  pi.on("message_end", refreshSession);
+  pi.on("turn_end", refreshSession);
+  pi.on("agent_end", refreshSession);
+  pi.on("session_compact", refreshSession);
+  pi.on("session_tree", refreshSession);
+  pi.on("session_info_changed", refreshSession);
+
+  pi.on("message_update", (event) => {
+    if (!session || event.message.role !== "assistant") return;
+    const speed = session.trackSpeed(event.message.usage.output, Date.now());
+    // Most updates come too close together for a reading; keep showing the last one.
+    if (speed !== null) update(generation, { speed });
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
-    const { displaced, displacedNotice } = session;
+    const { displaced, displacedNotice, stopClock } = session;
     clearTimeout(displacedNotice);
+    stopClock?.();
     session = undefined;
     generation++;
     // Only while we still own the footer: otherwise this would wipe the other extension's footer.

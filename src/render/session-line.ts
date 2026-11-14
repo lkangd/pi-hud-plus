@@ -1,6 +1,8 @@
 import type { RenderContext } from "../types.ts";
 import { renderContextParts } from "./lines/identity.ts";
 import { renderModelBadge, renderProjectPath, withCustomLine } from "./lines/project.ts";
+import { renderCost, renderSessionName, renderSessionTokensPart, renderSpeed } from "./lines/session-stats.ts";
+import { renderDuration, renderSessionTimeLine } from "./lines/session-time.ts";
 
 /** The compact layout's single Line: model badge + context bar, project, then the other Elements inline. */
 export function renderSessionLine(ctx: RenderContext): string | null {
@@ -16,8 +18,18 @@ export function renderSessionLine(ctx: RenderContext): string | null {
 
   const project = renderProjectPath(ctx);
   if (project) parts.push(project);
-  // The other inline Elements (git, session name, version, config counts, session tokens, duration, times,
-  // prompt cache, cost, speed, Extra command) go here, in claude-hud's order, before the Custom line.
+  // Git goes before the session name, version and config counts before the session tokens,
+  // prompt cache after the times and the Extra command after speed, in claude-hud's order.
+  for (const part of [
+    renderSessionName(ctx),
+    renderSessionTokensPart(ctx),
+    renderDuration(ctx),
+    renderSessionTimeLine(ctx),
+    renderCost(ctx),
+    renderSpeed(ctx),
+  ]) {
+    if (part) parts.push(part);
+  }
 
   const withCustom = withCustomLine(parts, ctx);
   return withCustom.length > 0 ? withCustom.join(" | ") : null;
