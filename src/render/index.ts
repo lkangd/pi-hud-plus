@@ -3,6 +3,7 @@ import type { HudConfig, HudElement } from "../config.ts";
 import { setLanguage } from "../i18n/index.ts";
 import type { HudSnapshot, RenderContext } from "../types.ts";
 import { dim } from "./colors.ts";
+import { renderEnvironmentLine } from "./lines/environment.ts";
 import { renderIdentityLine } from "./lines/identity.ts";
 import { renderMemoryLine } from "./lines/memory.ts";
 import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
@@ -14,15 +15,13 @@ import { renderToolsLine } from "./tools-line.ts";
 
 type ElementRenderer = (ctx: RenderContext, alignProgressLabels: boolean) => string | null;
 
-const notPortedYet: ElementRenderer = () => null;
-
-/** One Line module per Element. Elements whose module isn't ported yet render nothing. */
+/** One Line module per Element. */
 const ELEMENT_RENDERERS: Record<HudElement, ElementRenderer> = {
   project: renderProjectLine,
   context: renderIdentityLine,
   promptCache: renderPromptCacheLine,
   memory: renderMemoryLine,
-  environment: notPortedYet,
+  environment: renderEnvironmentLine,
   tools: (ctx) => (ctx.config.display.showTools ? renderToolsLine(ctx) : null),
   sessionTime: renderSessionTimeLine,
 };

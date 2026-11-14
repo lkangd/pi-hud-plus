@@ -10,6 +10,8 @@ export const en: Messages = {
   "label.tokens": "Tokens",
   "label.sessionStarted": "Started",
   "label.lastReply": "Last reply",
+  "label.skills": "skills",
+  "label.prompts": "prompts",
 
   // Status
   "status.expired": "expired",

@@ -8,6 +8,8 @@ export type MessageKey =
   | "label.tokens"
   | "label.sessionStarted"
   | "label.lastReply"
+  | "label.skills"
+  | "label.prompts"
   // Status
   | "status.expired"
   // Format

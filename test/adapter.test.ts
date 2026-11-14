@@ -873,3 +873,37 @@ test("the prompt cache counts down from the last reply on the clock", async () =
   assert.equal(tui.renders, 5, "the prompt cache starts the clock");
   assert.deepEqual(footer()!.render(80).map(strip), ["Cache ⏱ 4m 10s"]);
 });
+
+test("the Environment line counts context files, skills, prompts and MCP servers at session_start, corrected by before_agent_start", async () => {
+  const commands = [
+    { name: "review", source: "prompt" },
+    { name: "fix", source: "prompt" },
+    { name: "skill:tdd", source: "skill" },
+    { name: "hud", source: "extension" },
+  ];
+  const tools = [{ name: "read" }, { name: "mcp__docs__search" }, { name: "mcp__docs__fetch" }, { name: "mcp__github__issues" }];
+  const { emit } = fakePi(undefined, { getCommands: () => commands, getAllTools: () => tools });
+  const cwd = projectWith({ showConfigCounts: true, showModel: false });
+  writeFileSync(join(cwd, "AGENTS.md"), "# project");
+  writeFileSync(join(cwd, "..", "CLAUDE.md"), "# parent");
+  const { ctx, tui, footer } = fakeCtx({ cwd });
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["my-project", "2 AGENTS.md | 1 skills | 2 prompts | 2 MCPs"]);
+
+  // pi ran with --no-context-files: the run's system prompt options are authoritative.
+  commands.push({ name: "plan", source: "prompt" });
+  const skill = { name: "tdd", filePath: "/s/tdd/SKILL.md", baseDir: "/s/tdd" };
+  const systemPromptOptions = { cwd, contextFiles: [], skills: [skill, { ...skill, name: "grill" }] };
+  await emit("before_agent_start", { prompt: "hi", systemPrompt: "", systemPromptOptions }, ctx);
+  assert.equal(tui.renders, 1);
+  assert.deepEqual(footer()!.render(80).map(strip), ["my-project", "2 skills | 3 prompts | 2 MCPs"]);
+});
+
+test("with config counts off, pi's commands and tools are never read", async () => {
+  const unexpected = () => assert.fail("read while showConfigCounts is off");
+  const { emit } = fakePi(undefined, { getCommands: unexpected, getAllTools: unexpected });
+  const { ctx, footer } = fakeCtx();
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("before_agent_start", { prompt: "hi", systemPrompt: "", systemPromptOptions: { cwd: ctx.cwd } }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
+});

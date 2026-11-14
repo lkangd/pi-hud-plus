@@ -1,4 +1,5 @@
 import type { RenderContext } from "../types.ts";
+import { renderEnvironmentLine } from "./lines/environment.ts";
 import { renderContextParts } from "./lines/identity.ts";
 import { renderCompactGitPart, withGit } from "./lines/git.ts";
 import { renderExtraLabel, renderModelBadge, renderProjectPath, renderVersion, withCustomLine } from "./lines/project.ts";
@@ -24,6 +25,7 @@ export function renderSessionLine(ctx: RenderContext): string | null {
   for (const part of [
     renderSessionName(ctx),
     renderVersion(ctx),
+    renderEnvironmentLine(ctx),
     renderSessionTokensPart(ctx),
     renderDuration(ctx),
     renderSessionTimeLine(ctx),

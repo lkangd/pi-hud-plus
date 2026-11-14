@@ -48,6 +48,17 @@ export interface HudSnapshot {
   extensionStatuses?: ReadonlyMap<string, string>;
   /** System RAM, sampled on the clock tick. Absent or null: off or not sampled yet. */
   memory?: MemoryInfo | null;
+  /** What shapes the agent's context. Absent: config counts off. */
+  environment?: HudEnvironment;
+}
+
+export interface HudEnvironment {
+  /** AGENTS.md and other context files. */
+  contextFiles: number;
+  skills: number;
+  prompts: number;
+  /** Distinct MCP servers among the tools. */
+  mcps: number;
 }
 
 /** Token totals and cost summed over a session, like pi's built-in footer. */

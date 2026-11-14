@@ -1,5 +1,6 @@
 import {
   getAgentDir,
+  loadProjectContextFiles,
   VERSION,
   type ExtensionAPI,
   type ExtensionContext,
@@ -15,7 +16,7 @@ import { getMemoryUsage } from "./memory.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
 import { createSpeedTracker } from "./speed-tracker.ts";
-import type { HudContext, HudSnapshot, HudTool } from "./types.ts";
+import type { HudContext, HudEnvironment, HudSnapshot, HudTool } from "./types.ts";
 
 interface Session {
   generation: number;
@@ -111,6 +112,14 @@ export default function piHud(pi: ExtensionAPI): void {
     session!.requestRender?.();
   };
 
+  /** Prompts come from pi's commands, MCPs are the distinct `mcp__<server>__*` tool namespaces. Skills default to skill commands. */
+  const readEnvironment = (contextFiles: number, skills?: number): HudEnvironment => {
+    const commands = pi.getCommands();
+    const count = (source: string) => commands.filter((command) => command.source === source).length;
+    const servers = new Set(pi.getAllTools().map((tool) => /^mcp__(.+?)__/.exec(tool.name)?.[1]).filter(Boolean));
+    return { contextFiles, skills: skills ?? count("skill"), prompts: count("prompt"), mcps: servers.size };
+  };
+
   const readSession = createSessionReader();
   const refreshSession = (_event: unknown, ctx: ExtensionContext) => {
     if (isLive(generation)) update(generation, { session: readSession(pi, ctx), now: Date.now() });
@@ -189,6 +198,7 @@ export default function piHud(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
+    const config = loadConfig(ctx.cwd, getAgentDir());
     const current: Session = (session = {
       generation: ++generation,
       snapshot: {
@@ -200,12 +210,15 @@ export default function piHud(pi: ExtensionAPI): void {
         tools: [],
         now: Date.now(),
         session: readSession(pi, ctx),
+        // Seeded here; loadProjectContextFiles ignores --no-context-files, so before_agent_start corrects it.
+        environment: config.display.showConfigCounts
+          ? readEnvironment(loadProjectContextFiles({ cwd: ctx.cwd, agentDir: getAgentDir() }).length)
+          : undefined,
       },
       displaced: false,
       trackSpeed: createSpeedTracker(),
       tools: new Map(),
     });
-    const config = loadConfig(ctx.cwd, getAgentDir());
     if (hasTickingElement(config)) {
       current.stopClock = startClock((now) => {
         update(current.generation, { now });
@@ -247,6 +260,12 @@ export default function piHud(pi: ExtensionAPI): void {
       thinkingLevel: pi.getThinkingLevel(),
       session: readSession(pi, ctx, event.model),
     });
+  });
+  // The run's system prompt options are what the agent actually loaded.
+  pi.on("before_agent_start", (event) => {
+    if (!isLive(generation) || !session!.snapshot.environment) return;
+    const { contextFiles = [], skills = [] } = event.systemPromptOptions;
+    update(generation, { environment: readEnvironment(contextFiles.length, skills.length) });
   });
   pi.on("thinking_level_select", (event) => update(generation, { thinkingLevel: event.level }));
 
