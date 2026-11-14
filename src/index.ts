@@ -7,9 +7,12 @@ import {
   type MessageUpdateEvent,
   type ReadonlyFooterDataProvider,
 } from "@earendil-works/pi-coding-agent";
+import { hasTickingElement, startClock } from "./clock.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { getGitStatus } from "./git.ts";
 import { renderHud } from "./render/index.ts";
+import { createSessionReader } from "./session.ts";
+import { createSpeedTracker } from "./speed-tracker.ts";
 import type { HudContext, HudSnapshot } from "./types.ts";
 
 interface Session {
@@ -19,6 +22,8 @@ interface Session {
   /** Another extension took the footer: the HUD is dormant until the next session_start. */
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
+  stopClock?: () => void;
+  trackSpeed: ReturnType<typeof createSpeedTracker>;
   git?: GitJob;
   footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
@@ -89,6 +94,11 @@ export default function piHud(pi: ExtensionAPI): void {
     session!.requestRender?.();
   };
 
+  const readSession = createSessionReader();
+  const refreshSession = (_event: unknown, ctx: ExtensionContext) => {
+    if (isLive(generation)) update(generation, { session: readSession(pi, ctx), now: Date.now() });
+  };
+
   /** Async git refresh: at most one run in flight, triggers coalesced, runs spaced by the throttle, plus a backstop. */
   const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: HudConfig["gitStatus"]): GitJob => {
     let inFlight = false;
@@ -152,10 +162,14 @@ export default function piHud(pi: ExtensionAPI): void {
         cwd: ctx.cwd,
         context: readContext(ctx, undefined),
         tools: [],
+        now: Date.now(),
+        session: readSession(pi, ctx),
       },
       displaced: false,
+      trackSpeed: createSpeedTracker(),
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
+    if (hasTickingElement(config)) current.stopClock = startClock((now) => update(current.generation, { now }));
     setFooter(ctx.ui, (tui, _theme, footerData) => {
       current.requestRender = () => tui.requestRender();
       current.footerData = footerData;
@@ -167,6 +181,7 @@ export default function piHud(pi: ExtensionAPI): void {
         dispose() {
           if (ownCall || current.displaced) return;
           current.displaced = true;
+          current.stopClock?.();
           current.git?.stop();
           current.displacedNotice = setTimeout(() => {
             if (globals[NOTICE_SHOWN]) return;
@@ -178,11 +193,32 @@ export default function piHud(pi: ExtensionAPI): void {
     });
   });
 
-  // Changing model can clamp the thinking level, so re-read it.
-  pi.on("model_select", (event) => {
-    update(generation, { model: modelInfo(event.model, session?.footerData), thinkingLevel: pi.getThinkingLevel() });
+  pi.on("model_select", (event, ctx) => {
+    if (!isLive(generation)) return;
+    // ctx.model may still be the previous model here; the event's is the new one. Changing model can clamp the thinking level, so re-read it.
+    update(generation, {
+      model: modelInfo(event.model, session!.footerData),
+      thinkingLevel: pi.getThinkingLevel(),
+      session: readSession(pi, ctx, event.model),
+    });
   });
   pi.on("thinking_level_select", (event) => update(generation, { thinkingLevel: event.level }));
+
+  // Events after which the session's entries or name may have changed.
+  pi.on("message_end", refreshSession);
+  pi.on("turn_end", refreshSession);
+  pi.on("agent_end", refreshSession);
+  pi.on("session_compact", refreshSession);
+  pi.on("session_tree", refreshSession);
+  pi.on("session_info_changed", refreshSession);
+
+  pi.on("message_update", (event) => {
+    const usage = replyUsage(event.message);
+    if (!session || !usage) return;
+    const speed = session.trackSpeed(usage.output, Date.now());
+    // Most updates come too close together for a reading; keep showing the last one.
+    if (speed !== null) update(generation, { speed });
+  });
 
   pi.on("agent_end", () => session?.git?.trigger());
   pi.on("tool_execution_end", () => session?.git?.trigger());
@@ -224,8 +260,9 @@ export default function piHud(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
-    const { displaced, displacedNotice } = session;
+    const { displaced, displacedNotice, stopClock } = session;
     clearTimeout(displacedNotice);
+    stopClock?.();
     session.git?.stop();
     session = undefined;
     generation++;

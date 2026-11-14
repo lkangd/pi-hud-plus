@@ -2,6 +2,8 @@ import type { ModelFormatMode } from "../../config.ts";
 import type { RenderContext, ThinkingLevel } from "../../types.ts";
 import { custom as customColor, label as labelColor, model as modelColor, project as projectColor } from "../colors.ts";
 import { renderGitPart, withGit } from "./git.ts";
+import { renderCost, renderSessionName, renderSpeed } from "./session-stats.ts";
+import { renderDuration } from "./session-time.ts";
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_AND_BIDI_PATTERN = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u206A-\u206F]/g;
@@ -64,11 +66,15 @@ export function withCustomLine(parts: string[], { config }: RenderContext): stri
 }
 
 export function renderProjectLine(ctx: RenderContext): string | null {
-  // The other project-Line Elements go after git, in claude-hud's order: session name before version; duration, cost, speed after.
+  // The Extra command goes after the version, in claude-hud's order.
   const parts = [
     renderModelBadge(ctx),
     ...withGit(renderProjectPath(ctx), renderGitPart(ctx), ctx.config),
+    renderSessionName(ctx),
     renderVersion(ctx),
+    renderDuration(ctx),
+    renderCost(ctx),
+    renderSpeed(ctx),
   ].filter((part) => part !== null);
   const withCustom = withCustomLine(parts, ctx);
   return withCustom.length > 0 ? withCustom.join(" │ ") : null;

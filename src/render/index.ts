@@ -5,6 +5,8 @@ import type { HudSnapshot, RenderContext } from "../types.ts";
 import { dim } from "./colors.ts";
 import { renderIdentityLine } from "./lines/identity.ts";
 import { renderProjectLine } from "./lines/project.ts";
+import { renderSessionTimeLine } from "./lines/session-time.ts";
+import { renderSessionTokensLine } from "./lines/session-stats.ts";
 import { renderSessionLine } from "./session-line.ts";
 import { renderToolsLine } from "./tools-line.ts";
 
@@ -20,7 +22,7 @@ const ELEMENT_RENDERERS: Record<HudElement, ElementRenderer> = {
   memory: notPortedYet,
   environment: notPortedYet,
   tools: (ctx) => (ctx.config.display.showTools ? renderToolsLine(ctx) : null),
-  sessionTime: notPortedYet,
+  sessionTime: renderSessionTimeLine,
 };
 
 /** Activity Lines go after the separator. claude-hud's agents and todos have no Pi equivalent. */
@@ -132,7 +134,8 @@ export function renderHud(snapshot: HudSnapshot, config: HudConfig, width: numbe
   if (config.lineLayout === "expanded") {
     const renderedLines = renderExpanded(ctx);
     lines = renderedLines.map(({ line }) => line);
-    // claude-hud's session tokens Line goes here.
+    const sessionTokensLine = renderSessionTokensLine(ctx);
+    if (sessionTokensLine) lines.push(sessionTokensLine);
 
     if (showSeparators) {
       const firstActivityIndex = renderedLines.findIndex(({ isActivity }) => isActivity);
