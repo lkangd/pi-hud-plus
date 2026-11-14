@@ -2,19 +2,13 @@ import type { ContextValueMode } from "../../config.ts";
 import type { HudContext, RenderContext } from "../../types.ts";
 import { t } from "../../i18n/index.ts";
 import { coloredBar, getContextColor, label, RESET } from "../colors.ts";
-import { progressLabel } from "./label-align.ts";
+import { formatTokens } from "./session-stats.ts";
 
 /** claude-hud's adaptive bar width, keyed on the HUD width instead of the terminal's. */
 export function barWidth(width: number): number {
   if (width >= 100) return 10;
   if (width >= 60) return 6;
   return 4;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
-  return n.toString();
 }
 
 function formatContextValue({ tokens, window }: HudContext, percent: number, mode: ContextValueMode): string {
@@ -44,9 +38,9 @@ export function renderContextParts({ snapshot, config, width }: RenderContext): 
   };
 }
 
-export function renderIdentityLine(ctx: RenderContext, alignLabels = false): string | null {
+export function renderContextLine(ctx: RenderContext): string | null {
   const parts = renderContextParts(ctx);
   if (!parts) return null;
-  const label = progressLabel("label.context", ctx.config.colors, alignLabels);
-  return ctx.config.display.showContextBar ? `${label} ${parts.bar} ${parts.value}` : `${label} ${parts.value}`;
+  const name = label(t("label.context"), ctx.config.colors);
+  return ctx.config.display.showContextBar ? `${name} ${parts.bar} ${parts.value}` : `${name} ${parts.value}`;
 }

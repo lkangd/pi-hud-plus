@@ -1,9 +1,9 @@
 import { t } from "../../i18n/index.ts";
 import type { RenderContext, UsageTotals } from "../../types.ts";
 import { label } from "../colors.ts";
-import { sanitize } from "./project.ts";
+import { sanitize } from "../../sanitize.ts";
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(0)}k`;
   return n.toString();

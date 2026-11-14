@@ -15,7 +15,7 @@ export function renderToolsLine({ snapshot, config }: RenderContext): string | n
   const { tools } = snapshot;
   const colors = config.colors;
   const { toolNameMaxLength, toolsMaxVisible } = config.display;
-  if (tools.length === 0) return null;
+  if (!config.display.showTools || tools.length === 0) return null;
 
   const parts: string[] = [];
   const runningTools = tools.filter((tool) => tool.status === "running");

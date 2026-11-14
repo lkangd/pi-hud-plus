@@ -189,6 +189,7 @@ function oneOf<T>(value: unknown, allowed: readonly T[], fallback: T): T {
 }
 
 const COLOR_NAMES: readonly HudColorName[] = ["dim", "red", "green", "yellow", "magenta", "cyan", "brightBlue", "brightMagenta"];
+// Stricter than sanitize(): a bar glyph is rejected, not stripped, if any codepoint is a control, format, variation selector or unassigned.
 const UNSAFE_CODEPOINT = /[\p{Cc}\p{Cf}\p{Variation_Selector}\p{Zl}\p{Zp}\p{Cn}]/u;
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 

@@ -4,14 +4,7 @@ import { custom as customColor, label as labelColor, model as modelColor, projec
 import { renderGitPart, withGit } from "./git.ts";
 import { renderCost, renderSessionName, renderSpeed } from "./session-stats.ts";
 import { renderDuration } from "./session-time.ts";
-
-// eslint-disable-next-line no-control-regex
-const CONTROL_AND_BIDI_PATTERN = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u206A-\u206F]/g;
-
-/** Strips control and bidi characters so untrusted text (paths, a project config) can't inject escape codes. */
-export function sanitize(value: string): string {
-  return value.replace(CONTROL_AND_BIDI_PATTERN, "");
-}
+import { sanitize } from "../../sanitize.ts";
 
 const THINKING_SYMBOLS: Partial<Record<ThinkingLevel, string>> = {
   minimal: "○",

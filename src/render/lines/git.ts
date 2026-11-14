@@ -3,7 +3,7 @@
 import type { HudConfig } from "../../config.ts";
 import type { RenderContext } from "../../types.ts";
 import { git as gitColor, gitBranch as gitBranchColor, warning as warningColor, critical as criticalColor, red, green } from "../colors.ts";
-import { sanitize } from "./project.ts";
+import { sanitize } from "../../sanitize.ts";
 
 /** The project Line's `git:(branch* ↑1 ↓2 [+3 -4])` segment, or null when git is off or there is no status. */
 export function renderGitPart({ snapshot, config }: RenderContext): string | null {

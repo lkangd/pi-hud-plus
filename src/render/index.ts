@@ -4,7 +4,7 @@ import { setLanguage } from "../i18n/index.ts";
 import type { HudSnapshot, RenderContext } from "../types.ts";
 import { dim } from "./colors.ts";
 import { renderEnvironmentLine } from "./lines/environment.ts";
-import { renderIdentityLine } from "./lines/identity.ts";
+import { renderContextLine } from "./lines/context.ts";
 import { renderMemoryLine } from "./lines/memory.ts";
 import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
 import { renderProjectLine } from "./lines/project.ts";
@@ -13,16 +13,15 @@ import { renderSessionTokensLine } from "./lines/session-stats.ts";
 import { renderSessionLine } from "./session-line.ts";
 import { renderToolsLine } from "./tools-line.ts";
 
-type ElementRenderer = (ctx: RenderContext, alignProgressLabels: boolean) => string | null;
 
 /** One Line module per Element. */
-const ELEMENT_RENDERERS: Record<HudElement, ElementRenderer> = {
+const ELEMENT_RENDERERS: Record<HudElement, (ctx: RenderContext) => string | null> = {
   project: renderProjectLine,
-  context: renderIdentityLine,
+  context: renderContextLine,
   promptCache: renderPromptCacheLine,
   memory: renderMemoryLine,
   environment: renderEnvironmentLine,
-  tools: (ctx) => (ctx.config.display.showTools ? renderToolsLine(ctx) : null),
+  tools: renderToolsLine,
   sessionTime: renderSessionTimeLine,
 };
 
@@ -59,8 +58,8 @@ function collectMergeSequence(
   return sequence;
 }
 
-function renderElementLine(ctx: RenderContext, element: HudElement, options?: { alignProgressLabels?: boolean }): string | null {
-  return ELEMENT_RENDERERS[element](ctx, options?.alignProgressLabels ?? false);
+function renderElementLine(ctx: RenderContext, element: HudElement): string | null {
+  return ELEMENT_RENDERERS[element](ctx);
 }
 
 function renderExpanded(ctx: RenderContext): Array<{ line: string; isActivity: boolean }> {
@@ -94,8 +93,7 @@ function renderExpanded(ctx: RenderContext): Array<{ line: string; isActivity: b
             });
           } else {
             for (const { element: groupedElement, line } of renderedGroupLines) {
-              const stackedLine = renderElementLine(ctx, groupedElement, { alignProgressLabels: true }) ?? line;
-              lines.push({ line: stackedLine, isActivity: ACTIVITY_ELEMENTS.has(groupedElement) });
+              lines.push({ line, isActivity: ACTIVITY_ELEMENTS.has(groupedElement) });
             }
           }
         } else if (renderedGroupLines.length === 1) {
@@ -119,7 +117,7 @@ function renderExpanded(ctx: RenderContext): Array<{ line: string; isActivity: b
 }
 
 function collectActivityLines(ctx: RenderContext): string[] {
-  const toolsLine = ctx.config.display.showTools ? renderToolsLine(ctx) : null;
+  const toolsLine = renderToolsLine(ctx);
   return toolsLine ? [toolsLine] : [];
 }
 

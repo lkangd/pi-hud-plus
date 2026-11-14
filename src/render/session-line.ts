@@ -1,6 +1,6 @@
 import type { RenderContext } from "../types.ts";
 import { renderEnvironmentLine } from "./lines/environment.ts";
-import { renderContextParts } from "./lines/identity.ts";
+import { renderContextParts } from "./lines/context.ts";
 import { renderCompactGitPart, withGit } from "./lines/git.ts";
 import { renderExtraLabel, renderModelBadge, renderProjectPath, renderVersion, withCustomLine } from "./lines/project.ts";
 import { renderCost, renderSessionName, renderSessionTokensPart, renderSpeed } from "./lines/session-stats.ts";
