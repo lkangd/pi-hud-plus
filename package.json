@@ -4,6 +4,15 @@
   "description": "A claude-hud-style HUD for pi's footer",
   "type": "module",
   "license": "MIT",
+  "author": "lkangd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lkangd/pi-hud-plus.git"
+  },
+  "homepage": "https://github.com/lkangd/pi-hud-plus#readme",
+  "bugs": {
+    "url": "https://github.com/lkangd/pi-hud-plus/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -12,16 +21,19 @@
   ],
   "files": [
     "src",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/lkangd/pi-hud-plus/main/docs/screenshot.png"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --import tsx 'test/*.test.ts'"
+    "test": "node --test --import tsx 'test/*.test.ts'",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
