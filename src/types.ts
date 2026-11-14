@@ -1,5 +1,9 @@
 import type { HudConfig } from "./config.ts";
 import type { GitStatus } from "./git.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+/** pi's ThinkingLevel ("off" … "max"); pi-coding-agent doesn't re-export the type. */
+export type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
 export interface HudTool {
   name: string;
@@ -19,7 +23,11 @@ export interface HudContext {
 
 /** HUD snapshot: everything the render core needs. The pi adapter keeps it up to date. */
 export interface HudSnapshot {
-  model: { name: string } | null;
+  /** provider is set only when it should prefix the name (more than one provider available). */
+  model: { name: string; provider?: string } | null;
+  thinkingLevel?: ThinkingLevel;
+  /** pi's version, for `pi vX`. */
+  version?: string;
   cwd: string;
   /** null = no context usage to show yet. tokens/percent null = unknown (right after compaction). */
   context: HudContext | null;

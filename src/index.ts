@@ -1,5 +1,6 @@
 import {
   getAgentDir,
+  VERSION,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionUIContext,
@@ -19,6 +20,7 @@ interface Session {
   displaced: boolean;
   displacedNotice?: ReturnType<typeof setTimeout>;
   git?: GitJob;
+  footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
   /** The latest reply's prompt split, for the token breakdown. */
@@ -37,6 +39,12 @@ function readContext(ctx: ExtensionContext, breakdown: HudContext["breakdown"]):
   if (!usage) return null;
   const { tokens, contextWindow: window, percent } = usage;
   return tokens === null || !breakdown ? { tokens, window, percent } : { tokens, window, percent, breakdown };
+}
+
+/** The snapshot's model: provider/ prefixes it when more than one provider is available, like pi's footer. */
+function modelInfo(model: { name: string; provider: string } | undefined, footerData?: ReadonlyFooterDataProvider): HudSnapshot["model"] {
+  if (!model) return null;
+  return footerData && footerData.getAvailableProviderCount() > 1 ? { name: model.name, provider: model.provider } : { name: model.name };
 }
 
 interface GitJob {
@@ -137,12 +145,21 @@ export default function piHud(pi: ExtensionAPI): void {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const current: Session = (session = {
       generation: ++generation,
-      snapshot: { model: ctx.model ? { name: ctx.model.name } : null, cwd: ctx.cwd, context: readContext(ctx, undefined), tools: [] },
+      snapshot: {
+        model: modelInfo(ctx.model),
+        thinkingLevel: pi.getThinkingLevel(),
+        version: VERSION,
+        cwd: ctx.cwd,
+        context: readContext(ctx, undefined),
+        tools: [],
+      },
       displaced: false,
     });
     const config = loadConfig(ctx.cwd, getAgentDir());
     setFooter(ctx.ui, (tui, _theme, footerData) => {
       current.requestRender = () => tui.requestRender();
+      current.footerData = footerData;
+      current.snapshot = { ...current.snapshot, model: modelInfo(ctx.model, footerData) };
       if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, config.gitStatus);
       return {
         render: (width) => renderHud(current.snapshot, config, width),
@@ -161,9 +178,11 @@ export default function piHud(pi: ExtensionAPI): void {
     });
   });
 
+  // Changing model can clamp the thinking level, so re-read it.
   pi.on("model_select", (event) => {
-    update(generation, { model: { name: event.model.name } });
+    update(generation, { model: modelInfo(event.model, session?.footerData), thinkingLevel: pi.getThinkingLevel() });
   });
+  pi.on("thinking_level_select", (event) => update(generation, { thinkingLevel: event.level }));
 
   pi.on("agent_end", () => session?.git?.trigger());
   pi.on("tool_execution_end", () => session?.git?.trigger());

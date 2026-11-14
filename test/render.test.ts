@@ -195,3 +195,41 @@ test("the token breakdown shows at critical context, unless showTokenBreakdown i
   assert.equal(render({ ...high, context: { ...high.context, percent: 84 } })[1], "Context █████░ 84%");
   assert.equal(render({ ...high, context: { ...high.context, breakdown: undefined } })[1], "Context █████░ 86%");
 });
+
+test("showThinkingLevel adds the thinking-level symbol and name to the model badge", () => {
+  const badge = (thinkingLevel: HudSnapshot["thinkingLevel"], showThinkingLevel = true) =>
+    render({ ...snapshot, thinkingLevel }, { display: { showThinkingLevel } })[0];
+  assert.equal(badge("minimal"), "[Claude Opus 4.6 ○ minimal] │ my-project");
+  assert.equal(badge("low"), "[Claude Opus 4.6 ○ low] │ my-project");
+  assert.equal(badge("medium"), "[Claude Opus 4.6 ◔ medium] │ my-project");
+  assert.equal(badge("high"), "[Claude Opus 4.6 ◑ high] │ my-project");
+  assert.equal(badge("xhigh"), "[Claude Opus 4.6 ◕ xhigh] │ my-project");
+  assert.equal(badge("max"), "[Claude Opus 4.6 ◕ max] │ my-project");
+  assert.equal(badge("off"), PROJECT);
+  assert.equal(badge("high", false), PROJECT);
+  const compact = render({ ...snapshot, thinkingLevel: "high" }, { lineLayout: "compact", display: { showThinkingLevel: true } });
+  assert.equal(compact[0], "[Claude Opus 4.6 ◑ high] █░░░░░ 23% | my-project");
+});
+
+test("the model badge is prefixed with provider/ when the snapshot carries one", () => {
+  const s = { ...snapshot, model: { name: "Claude Opus 4.6", provider: "anthropic" } };
+  assert.equal(render(s)[0], "[anthropic/Claude Opus 4.6] │ my-project");
+  assert.equal(render(s, { display: { modelOverride: "Boss" } })[0], "[anthropic/Boss] │ my-project");
+});
+
+test("modelFormat and modelOverride shape the model name as in claude-hud", () => {
+  const name = (display: ConfigPatch["display"]) =>
+    render({ ...snapshot, model: { name: "Claude Opus 4.6 (1M context)" } }, { display })[0];
+  assert.equal(name({ modelFormat: "full" }), "[Claude Opus 4.6 (1M context)] │ my-project");
+  assert.equal(name({ modelFormat: "compact" }), "[Claude Opus 4.6] │ my-project");
+  assert.equal(name({ modelFormat: "short" }), "[Opus 4.6] │ my-project");
+  assert.equal(name({ modelFormat: "short", modelOverride: "My Model" }), "[My Model] │ my-project");
+  assert.equal(name({ modelOverride: "\x1b[31mevil" }), "[[31mevil] │ my-project");
+});
+
+test("showVersion adds pi vX after the project in both layouts", () => {
+  const s = { ...snapshot, version: "1.5.2" };
+  assert.equal(render(s)[0], PROJECT);
+  assert.equal(render(s, { display: { showVersion: true } })[0], `${PROJECT} │ pi v1.5.2`);
+  assert.equal(render(s, { lineLayout: "compact", display: { showVersion: true } })[0], "[Claude Opus 4.6] █░░░░░ 23% | my-project | pi v1.5.2");
+});

@@ -1,5 +1,6 @@
-import type { RenderContext } from "../../types.ts";
-import { custom as customColor, model as modelColor, project as projectColor } from "../colors.ts";
+import type { ModelFormatMode } from "../../config.ts";
+import type { RenderContext, ThinkingLevel } from "../../types.ts";
+import { custom as customColor, label as labelColor, model as modelColor, project as projectColor } from "../colors.ts";
 import { renderGitPart, withGit } from "./git.ts";
 
 // eslint-disable-next-line no-control-regex
@@ -10,10 +11,39 @@ export function sanitize(value: string): string {
   return value.replace(CONTROL_AND_BIDI_PATTERN, "");
 }
 
+const THINKING_SYMBOLS: Partial<Record<ThinkingLevel, string>> = {
+  minimal: "○",
+  low: "○",
+  medium: "◔",
+  high: "◑",
+  xhigh: "◕",
+  max: "◕",
+};
+
 /** The `[model]` badge, shared by the project Line and the compact session Line. */
 export function renderModelBadge({ snapshot, config }: RenderContext): string | null {
   if (!config.display.showModel || !snapshot.model) return null;
-  return modelColor(`[${snapshot.model.name}]`, config.colors);
+  const { name, provider } = snapshot.model;
+  let badge = (provider ? `${provider}/` : "") + formatModelName(name, config.display.modelFormat, config.display.modelOverride);
+  const level = snapshot.thinkingLevel;
+  const symbol = level && THINKING_SYMBOLS[level];
+  if (config.display.showThinkingLevel && symbol) badge += ` ${symbol} ${level}`;
+  // modelOverride can come from an untrusted project config.
+  return modelColor(`[${sanitize(badge)}]`, config.colors);
+}
+
+/** claude-hud's formatModelName: override wins; compact strips a "(… context)" suffix; short also strips "Claude ". */
+function formatModelName(name: string, format: ModelFormatMode, override: string): string {
+  if (override) return override;
+  if (format === "full") return name;
+  const compact = name.replace(/\s*\([^)]*\bcontext\b[^)]*\)/i, "").trim();
+  return format === "short" ? compact.replace(/^Claude\s+/i, "") : compact;
+}
+
+/** `pi vX`, shared by the project Line and the compact session Line. */
+export function renderVersion({ snapshot, config }: RenderContext): string | null {
+  if (!config.display.showVersion || !snapshot.version) return null;
+  return labelColor(`pi v${snapshot.version}`, config.colors);
 }
 
 /** The cwd trimmed to `pathLevels` segments. */
@@ -34,8 +64,12 @@ export function withCustomLine(parts: string[], { config }: RenderContext): stri
 }
 
 export function renderProjectLine(ctx: RenderContext): string | null {
-  // The other project-Line Elements (session name, version, duration, cost, speed) go after git, in claude-hud's order.
-  const parts = [renderModelBadge(ctx), ...withGit(renderProjectPath(ctx), renderGitPart(ctx), ctx.config)].filter((part) => part !== null);
+  // The other project-Line Elements go after git, in claude-hud's order: session name before version; duration, cost, speed after.
+  const parts = [
+    renderModelBadge(ctx),
+    ...withGit(renderProjectPath(ctx), renderGitPart(ctx), ctx.config),
+    renderVersion(ctx),
+  ].filter((part) => part !== null);
   const withCustom = withCustomLine(parts, ctx);
   return withCustom.length > 0 ? withCustom.join(" │ ") : null;
 }

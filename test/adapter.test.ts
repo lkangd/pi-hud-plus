@@ -1,7 +1,7 @@
 import { beforeEach, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters as strip } from "node:util";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { VERSION, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,10 @@ function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.rejec
   const handlers = new Map<string, Handler[]>();
   const pi = {
     exec,
+    thinkingLevel: "off",
+    getThinkingLevel() {
+      return this.thinkingLevel;
+    },
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -26,7 +30,7 @@ function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.rejec
   const emit = async (event: string, payload: object, ctx: object) => {
     for (const h of handlers.get(event) ?? []) await h({ type: event, ...payload }, ctx);
   };
-  return { emit };
+  return { emit, pi };
 }
 
 beforeEach(() => {
@@ -45,7 +49,10 @@ function fakeFooterData(branch: string | null) {
       return this.branch;
     },
     getExtensionStatuses: () => new Map(),
-    getAvailableProviderCount: () => 1,
+    providers: 1,
+    getAvailableProviderCount() {
+      return this.providers;
+    },
     onBranchChange(cb: () => void) {
       listeners.add(cb);
       return () => listeners.delete(cb);
@@ -109,6 +116,52 @@ test("a model change updates the snapshot and requests a render", async () => {
   await emit("model_select", { model: { name: "GPT-5" }, source: "set" }, ctx);
   assert.equal(tui.renders, 1);
   assert.deepEqual(footer()!.render(80).map(strip), ["[GPT-5] │ my-project"]);
+});
+
+/** A cwd whose project config turns on the given display fields. */
+function cwdWithDisplay(display: object) {
+  const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-repo");
+  mkdirSync(join(cwd, ".pi"), { recursive: true });
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display }));
+  return cwd;
+}
+
+test("the thinking level comes from pi.getThinkingLevel(), refreshed on thinking_level_select and model_select", async () => {
+  const { emit, pi } = fakePi();
+  const { ctx, tui, footer } = fakeCtx({ cwd: cwdWithDisplay({ showThinkingLevel: true }) });
+  pi.thinkingLevel = "medium";
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6 ◔ medium] │ my-repo"]);
+  pi.thinkingLevel = "high";
+  await emit("thinking_level_select", { level: "high", previousLevel: "medium" }, ctx);
+  assert.equal(tui.renders, 1);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6 ◑ high] │ my-repo"]);
+  // A model without reasoning drops the level to off.
+  pi.thinkingLevel = "off";
+  await emit("model_select", { model: { name: "GPT-4o", provider: "openai" }, source: "set" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[GPT-4o] │ my-repo"]);
+});
+
+test("the model is prefixed with provider/ only when more than one provider is available", async () => {
+  const { emit } = fakePi();
+  const footerData = fakeFooterData(null);
+  footerData.providers = 2;
+  const { ctx, footer } = fakeCtx({}, footerData);
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[anthropic/Claude Opus 4.6] │ my-project"]);
+  footerData.providers = 1;
+  await emit("model_select", { model: { name: "GPT-5", provider: "openai" }, source: "set" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[GPT-5] │ my-project"]);
+  footerData.providers = 3;
+  await emit("model_select", { model: { name: "GPT-5", provider: "openai" }, source: "set" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["[openai/GPT-5] │ my-project"]);
+});
+
+test("showVersion shows pi's exported VERSION", async () => {
+  const { emit } = fakePi();
+  const { ctx, footer } = fakeCtx({ cwd: cwdWithDisplay({ showVersion: true }) });
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), [`[Claude Opus 4.6] │ my-repo │ pi v${VERSION}`]);
 });
 
 test("session_shutdown restores pi's footer and later events are ignored", async () => {
