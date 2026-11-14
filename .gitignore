@@ -1,0 +1,26 @@
+# Local tracker / planning scratch
+.scratch/
+
+# Dependencies & build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.tgz
+
+# Project-local pi state (trusted-project settings, .pi/extensions symlinks for testing)
+.pi/
+
+# Local agent settings
+.claude/settings.local.json
+
+# Env & logs
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
