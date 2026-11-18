@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- **Usage limits**: the `usage` Element is back, with claude-hud's config fields. It shows 5h, Weekly and Monthly Limit windows for Codex (ChatGPT) and GLM Coding Plan models, and a Balance for DeepSeek models. The HUD fetches these from each vendor with pi's credentials. Other vendors can feed it through claude-hud's External usage snapshot file (`display.externalUsagePath`). The Element is on by default and sits beside the context bar. To stop the requests, set `display.showUsage` to `false` or turn off the new "Usage limits" row in `/pi-hud:configure`.
+
 ## [0.2.0] - 2026-11-17
 
 ### New Features

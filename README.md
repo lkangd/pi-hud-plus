@@ -35,7 +35,7 @@ The default `lineLayout` is `"expanded"`: one Line per Element, in `elementOrder
 |---|---|---|
 | `project` | `[model]` badge, project path, `git:(branch* ↑2 ↓1 [+120 -14])`, then session name, `pi vX`, the Extra command's label, session duration, cost and output speed | `display.showModel`, `display.showProject`, `gitStatus.enabled`, `display.showSessionName`, `display.showVersion`, `extraCommand`, `display.showDuration`, `display.showCost`, `display.showSpeed` |
 | `context` | `Context ██████░░░░ 46%`, coloured by the warning and critical thresholds. At or above the critical threshold it adds the latest reply's `(in: …, cache: …)` split | `display.showContextBar`, `display.contextValue`, `display.showTokenBreakdown` |
-| `usage` | `Usage ██░░░░ 25% (resets in 1h 30m)`: the 5h Limit window, plus `\| Weekly …` and `\| Monthly …` at or above `sevenDayThreshold`, or a Balance (`Usage ¥4.12`). For Codex models, from ChatGPT's rate limits; for DeepSeek models, from DeepSeek's balance; for other models, from the External usage snapshot file | `display.showUsage`, `display.usageValue`, `display.usageBarEnabled`, `display.showResetLabel`, `display.usageCompact`, `display.usageThreshold`, `display.sevenDayThreshold`, `display.externalUsagePath` |
+| `usage` | `Usage ██░░░░ 25% (resets in 1h 30m)`: the 5h Limit window, plus `\| Weekly …` and `\| Monthly …` at or above `sevenDayThreshold`, or a Balance (`Usage ¥4.12`). Fetched for Codex, GLM Coding Plan and DeepSeek models, otherwise read from the External usage snapshot file. See [Usage limits](#usage-limits) | `display.showUsage`, `display.usageValue`, `display.usageBarEnabled`, `display.showResetLabel`, `display.usageCompact`, `display.usageThreshold`, `display.sevenDayThreshold`, `display.externalUsagePath` |
 | `promptCache` | `Cache ⏱ 3m 45s`: time left on the prompt cache since the last reply, yellow near the end, then `expired` | `display.showPromptCache`, `display.promptCacheTtlSeconds` |
 | `memory` | `Approx RAM ████░░ 12 GB / 16 GB (75%)`: system RAM. Expanded layout only | `display.showMemoryUsage` |
 | `environment` | `2 AGENTS.md \| 5 skills \| 3 prompts \| 1 MCPs`: what shapes the agent's context. MCPs are the distinct `mcp__<server>__*` tool namespaces | `display.showConfigCounts`, `display.environmentThreshold` |
@@ -69,7 +69,7 @@ Top level:
 | `lineLayout` | `"expanded"` | `"expanded"`, `"compact"` |
 | `showSeparators` | `false` | boolean |
 | `pathLevels` | `1` | `1`, `2`, `3`: how many trailing directories of the cwd to show |
-| `elementOrder` | `["project", "context", "promptCache", "memory", "environment", "tools", "sessionTime"]` | Elements in Line order. Leaving an Element out hides its Line. Unknown ids and duplicates are dropped |
+| `elementOrder` | `["project", "context", "usage", "promptCache", "memory", "environment", "tools", "sessionTime"]` | Elements in Line order. Leaving an Element out hides its Line. Unknown ids and duplicates are dropped |
 | `extraCommand` | `""` (off) | shell command, see [Extra command](#extra-command) |
 
 `gitStatus`:
@@ -187,6 +187,42 @@ Then run `/reload`.
 
 It runs when a session starts, after each agent run, and every 30 seconds. Each run has a 3-second timeout. Control and escape characters are stripped from the label, and it is cut to 50 characters. If the command fails, times out or prints anything else, no label is shown. To see why, use [debug logging](#debug-logging).
 
+## Usage limits
+
+The `usage` Element follows the current model. pi-hud-plus recognises the vendor from the model itself (its API and base URL), not the provider's name, so renamed and custom providers work too.
+
+| Vendor | Detected by | Shows | From |
+|---|---|---|---|
+| Codex (ChatGPT subscription) | the model's API is `openai-codex-responses` | 5h and Weekly Limit windows (a plan may report only one of them) | the `codex.rate_limits` frame ChatGPT sends with each reply, else `GET https://chatgpt.com/backend-api/wham/usage` |
+| GLM Coding Plan | base URL host `open.bigmodel.cn`, `bigmodel.cn` or `api.z.ai` | 5h, Weekly (missing on some plans) and Monthly (tool calls) | `GET https://open.bigmodel.cn/api/monitor/usage/quota/limit`, or the same path on `api.z.ai` |
+| DeepSeek | base URL host `api.deepseek.com` | a Balance per currency, e.g. `¥4.12` | `GET https://api.deepseek.com/user/balance` |
+
+The HUD sends these requests itself, with the API key or token pi already has for the model. It gets them from pi's model registry, so pi keeps OAuth tokens refreshed, and it never reads `auth.json`. Each request goes only to that model's own vendor. The Codex endpoint and frame are unofficial ChatGPT internals, and GLM documents its endpoint only in Zhipu's own plugins, so either may change without notice. DeepSeek's endpoint is public API. The `api.z.ai` host hasn't been tested against a live account.
+
+It refreshes when a session starts, when you switch models, after each agent run and every 5 minutes. Only one request runs at a time, and none is sent while the data is less than a minute old. A Codex reply's frame updates the Element right away, so the request after that reply is usually skipped. Each request times out after 10 seconds. Switching to another vendor's model clears the Element until the new vendor's data arrives. With `display.showUsage` off, no requests are sent.
+
+A failed request (no credentials, a timeout, an HTTP error, a reply in an unexpected shape) shows no error. Instead, the Element shows the External usage snapshot, or hides until a later refresh succeeds. To see why the request failed, use [debug logging](#debug-logging).
+
+### External usage snapshot
+
+For any other vendor, or when a vendor's request fails, the HUD can read a JSON file that your own script keeps up to date. Set its path in `display.externalUsagePath`. The format is claude-hud's:
+
+```json
+{
+  "updated_at": "2026-11-18T09:30:00Z",
+  "five_hour": { "used_percentage": 45, "resets_at": "2026-11-18T12:00:00Z" },
+  "seven_day": { "used_percentage": 82, "resets_at": 1795000000 },
+  "balance_label": "$12.40"
+}
+```
+
+- `updated_at` is required: an ISO date string, or epoch seconds or milliseconds (numbers above 10¹² count as milliseconds). Once it's older than `display.externalUsageFreshnessMs` (5 minutes by default), the file is ignored.
+- `five_hour`, `seven_day` and `balance_label` are each optional, but at least one must be present. `used_percentage` is 0–100, rounded and clamped. `resets_at` takes the same forms as `updated_at`. If a `resets_at` doesn't parse, the whole file is ignored.
+- `balance_label` is shown instead of the windows. Control and escape characters are stripped, and it is cut to 50 characters.
+- The format has no monthly window.
+
+The file is read only while the current model has no data of its own: on the refresh triggers above and on every 1-second clock tick. pi-hud-plus never writes it.
+
 ## Coexisting with other footer extensions
 
 pi has one footer, and the last extension to set it wins. Other extensions' footer statuses aren't lost: they show on the HUD's Extension statuses Line.
@@ -199,7 +235,7 @@ To see the HUD, disable the other footer extension with `pi config`, then start 
 
 ## Debug logging
 
-Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command failed or why the config file was ignored. Lines go to `~/.pi/agent/pi-hud-plus-debug.log`, not the terminal, because pi owns it.
+Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command failed, why a Usage limit request failed, or why the config file was ignored. Lines go to `~/.pi/agent/pi-hud-plus-debug.log`, not the terminal, because pi owns it.
 
 ## Language
 
@@ -207,12 +243,16 @@ Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command fa
 
 ## Differences from claude-hud
 
-- **Usage limits**: the HUD fetches them for the current model's vendor (Codex: the `codex.rate_limits` frame in each reply, else `chatgpt.com/backend-api/wham/usage`; DeepSeek: `api.deepseek.com/user/balance`; at most once a minute plus every 5 minutes) with pi's credentials; for any other model it reads the External usage snapshot file (`externalUsagePath`). `externalUsageWritePath` isn't ported: it copies Claude Code's statusline data, which pi doesn't have. Usage adds a Monthly Limit window after Weekly. An absent `sevenDayThreshold` is `80`, its documented default; claude-hud's validation turns it into `0`.
+- **Usage limits**: pi has no API for them, so the HUD fetches them itself for the current model's vendor (Codex, the GLM Coding Plan or DeepSeek), using pi's credentials. See [Usage limits](#usage-limits). For any other model, it reads the External usage snapshot file (`externalUsagePath`), as claude-hud does.
+- **Monthly**: a third Limit window, `Monthly` (`本月`), after Weekly. It comes from GLM's monthly tool-call pool and, like Weekly, is shown at or above `sevenDayThreshold`. In compact form it is `mo:`.
+- **Balance for DeepSeek**: fetched from DeepSeek's API. In claude-hud a Balance comes only from the snapshot's `balance_label`.
+- **No `externalUsageWritePath`**: it copies Claude Code's statusline data, which pi doesn't have.
+- **`sevenDayThreshold` default**: an absent `sevenDayThreshold` is `80`, its documented default; claude-hud's validation turns it into `0`.
 - **Dropped Elements**: `addedDirs`, `agents` and `todos` have no pi equivalent. The output style and Claude Code's mode line are gone too.
 - **Pi equivalents**: `pi vX` instead of `CC vX`; pi's thinking level instead of Claude's effort level; the Environment line counts AGENTS.md files, skills, prompt templates and MCP servers instead of CLAUDE.md, rules, MCPs and hooks.
 - **Renamed fields, no aliases**: `display.showClaudeCodeVersion` is `display.showVersion`, and `display.showEffortLevel` is `display.showThinkingLevel`.
 - **Other dropped fields**: `maxWidth` and `forceMaxWidth` (pi gives the HUD its width), `display.showAddedDirs`, `addedDirsLayout`, `showAgents`, `showTodos`, `showOutputStyle` and `autocompactBuffer`.
-- **Changed defaults**: `elementOrder` has no `agents`, `todos` or `addedDirs`.
+- **Changed defaults**: `elementOrder` has no `agents`, `todos` or `addedDirs`. It keeps claude-hud's `usage` after `context`, and `mergeGroups` keeps claude-hud's `[["context", "usage"]]`.
 - **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config) and `display.showExtensionStatuses`.
 - **Debug log**: `DEBUG=pi-hud-plus` instead of `DEBUG=claude-hud`, written to a file instead of stderr.
 - **Commands**: `/pi-hud:setup` and `/pi-hud:configure` replace `/claude-hud:setup` and `/claude-hud:configure`. There's no statusline to install, so setup only writes config, and both use one settings list instead of a series of questions. There's no config file watching: after editing the file by hand, run `/reload`.
