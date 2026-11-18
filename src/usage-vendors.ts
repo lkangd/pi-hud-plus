@@ -1,6 +1,7 @@
 // Native Usage limits: one entry per vendor, detected from the current model. Adding a vendor = a detect plus a fetch.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createDebug } from "./debug.ts";
+import { sanitizeBalanceLabel } from "./external-usage.ts";
 import type { UsageLimit } from "./types.ts";
 
 export type UsageModel = NonNullable<ExtensionContext["model"]>;
@@ -81,6 +82,38 @@ export const codex: UsageVendor = {
   },
 };
 
-const VENDORS: UsageVendor[] = [codex];
+const CURRENCY_SYMBOLS: Record<string, string> = { CNY: "¥", USD: "$" };
+
+/** `GET /user/balance`'s body: each `balance_infos` entry as `<symbol><total_balance>`, joined by a space. */
+export function parseDeepSeekBalance(body: unknown): UsageLimit | null {
+  if (!isObject(body) || !Array.isArray(body.balance_infos)) return null;
+  const parts = body.balance_infos
+    .filter((info): info is Record<string, unknown> => isObject(info) && typeof info.currency === "string" && typeof info.total_balance === "string")
+    .map((info) => `${CURRENCY_SYMBOLS[info.currency as string] ?? `${info.currency} `}${info.total_balance}`);
+  const balanceLabel = sanitizeBalanceLabel(parts.join(" "));
+  if (!balanceLabel) return null;
+  return { fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null, balanceLabel };
+}
+
+/** The model's baseUrl host, or null when it has none or it doesn't parse. */
+function baseUrlHost(model: UsageModel): string | null {
+  try {
+    return new URL(model.baseUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
+export const deepseek: UsageVendor = {
+  name: "deepseek",
+  detect: (model) => baseUrlHost(model) === "api.deepseek.com",
+  async fetch(_model, apiKey) {
+    const usage = parseDeepSeekBalance(await fetchJson("https://api.deepseek.com/user/balance", { Authorization: `Bearer ${apiKey}` }));
+    if (!usage) debug("deepseek: no usable balance_infos in user/balance");
+    return usage;
+  },
+};
+
+const VENDORS: UsageVendor[] = [codex, deepseek];
 
 export const detectVendor = (model: UsageModel | undefined): UsageVendor | undefined => (model ? VENDORS.find((vendor) => vendor.detect(model)) : undefined);

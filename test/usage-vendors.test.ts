@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { codex, detectVendor, fetchJson, parseCodexRateLimits, parseCodexUsage } from "../src/usage-vendors.ts";
+import { codex, deepseek, detectVendor, fetchJson, parseCodexRateLimits, parseCodexUsage, parseDeepSeekBalance } from "../src/usage-vendors.ts";
 
 // Live 2026-11-18 responses (identifiers redacted). Plan pro reports only a weekly window.
 const WHAM_WEEKLY_ONLY = {
@@ -112,4 +112,52 @@ test("detectVendor: Codex by model.api, nothing for other models", () => {
   assert.equal(detectVendor(model), codex);
   assert.equal(detectVendor({ api: "openai-responses", provider: "openai-codex" } as typeof model), undefined);
   assert.equal(detectVendor(undefined), undefined);
+});
+
+// ---- DeepSeek ----
+
+// Live 2026-11-18 /user/balance response.
+const DEEPSEEK_CNY = { is_available: true, balance_infos: [{ currency: "CNY", total_balance: "4.12", granted_balance: "0.00", topped_up_balance: "4.12" }] };
+const balance = (balanceLabel: string) => ({ ...none, sevenDay: null, sevenDayResetAt: null, balanceLabel });
+
+test("deepseek balance: the live CNY body gives ¥4.12", () => {
+  assert.deepEqual(parseDeepSeekBalance(DEEPSEEK_CNY), balance("¥4.12"));
+});
+
+test("deepseek balance: several currencies join by a space; unknown ones keep their code", () => {
+  const body = { balance_infos: [{ currency: "CNY", total_balance: "4.12" }, { currency: "USD", total_balance: "1.50" }, { currency: "EUR", total_balance: "2.00" }] };
+  assert.deepEqual(parseDeepSeekBalance(body), balance("¥4.12 $1.50 EUR 2.00"));
+});
+
+test("deepseek balance: escape sequences and bidi characters are stripped", () => {
+  const body = { balance_infos: [{ currency: "\u001b[31mCNY\u202E", total_balance: "4.12\u0007" }] };
+  assert.deepEqual(parseDeepSeekBalance(body), balance("CNY 4.12"));
+});
+
+test("deepseek balance: malformed bodies give no data; bad entries are skipped", () => {
+  for (const body of [null, "x", {}, { balance_infos: null }, { balance_infos: [] }, { balance_infos: [null, { currency: "CNY" }, { currency: "CNY", total_balance: 4.12 }, { total_balance: "4.12" }] }]) {
+    assert.equal(parseDeepSeekBalance(body), null, JSON.stringify(body));
+  }
+  assert.deepEqual(parseDeepSeekBalance({ balance_infos: [{ currency: "CNY", total_balance: 4.12 }, { currency: "USD", total_balance: "1.50" }] }), balance("$1.50"));
+});
+
+const deepseekModel = { api: "openai-completions", baseUrl: "https://api.deepseek.com" } as typeof model;
+
+test("deepseek fetch: GET user/balance with the Bearer key, parsed; failures give null", async (t) => {
+  const fetch = t.mock.method(globalThis, "fetch", async () => json(DEEPSEEK_CNY));
+  assert.deepEqual(await deepseek.fetch(deepseekModel, "sk"), balance("¥4.12"));
+  const [url, init] = fetch.mock.calls[0]!.arguments as unknown as [string, RequestInit];
+  assert.equal(url, "https://api.deepseek.com/user/balance");
+  assert.deepEqual(init.headers, { Authorization: "Bearer sk" });
+  for (const reply of [() => json(DEEPSEEK_CNY, 401), () => json("<html>"), () => json({ is_available: false })]) {
+    t.mock.method(globalThis, "fetch", async () => reply());
+    assert.equal(await deepseek.fetch(deepseekModel, "sk"), null);
+  }
+});
+
+test("detectVendor: DeepSeek by baseUrl host, whatever the provider or path", () => {
+  assert.equal(detectVendor(deepseekModel), deepseek);
+  assert.equal(detectVendor({ ...deepseekModel, provider: "my-ds", baseUrl: "https://api.deepseek.com/v1/" }), deepseek);
+  assert.equal(detectVendor({ ...deepseekModel, baseUrl: "https://api.deepseek.com.evil.test" }), undefined);
+  assert.equal(detectVendor({ ...deepseekModel, baseUrl: "not a url" }), undefined);
 });

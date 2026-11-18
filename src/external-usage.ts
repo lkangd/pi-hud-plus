@@ -19,7 +19,7 @@ function parseUsagePercent(value: unknown): number | null {
 }
 
 /** claude-hud's balance_label sanitising: escape sequences out, then control and bidi characters, cut to 50. */
-function sanitizeBalanceLabel(value: unknown): string | null {
+export function sanitizeBalanceLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const sanitized = sanitize(
     value
