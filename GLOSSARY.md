@@ -21,3 +21,11 @@
 **Displaced**: The state of the HUD after another extension has taken pi's footer. A displaced HUD shows nothing and does no work until the next session starts.
 
 **Preset**: One of three named starting configurations (Full, Essential, Minimal), as in claude-hud's configure command. Choosing a Preset sets which Elements are on; it never touches colors, thresholds or other advanced fields.
+
+**Usage limit**: A subscription's rolling allowance as reported by its vendor (ChatGPT for Codex, the GLM Coding Plan), made of one or more Limit windows. Distinct from session tokens, which count what this session consumed.
+
+**Limit window**: One period of a Usage limit (5-hour, weekly, monthly) with the share used and the time it resets. A vendor may report only some windows for a given plan.
+
+**External usage snapshot**: A JSON file another tool writes with Usage limit data, in claude-hud's format. The HUD reads it only when the current provider gives no Usage limit of its own.
+
+**Balance**: The prepaid credit left at a pay-as-you-go vendor (DeepSeek). Shown in place of Limit windows, since such vendors have no Usage limit.

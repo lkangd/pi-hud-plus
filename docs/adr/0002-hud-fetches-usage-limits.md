@@ -1,0 +1,3 @@
+# The HUD fetches Usage limits from vendors itself
+
+The phase-1 spec ruled Usage limits out because pi has no API for them. We reverse that: pi-hud-plus calls the vendor's own endpoints (ChatGPT `wham/usage` for Codex, the GLM Coding Plan quota endpoint, DeepSeek's balance endpoint) with the credentials pi already holds, obtained through `ctx.modelRegistry` so OAuth tokens are refreshed by pi. claude-hud never does network I/O (Claude Code hands it rate limits on stdin), so this is the one place the port goes further. The endpoints are unofficial and may change; failure hides the usage Element rather than erroring, and fetches run off the render path and only for the current model's provider.
