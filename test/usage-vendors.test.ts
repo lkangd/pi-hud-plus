@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { codex, detectVendor, fetchJson, parseCodexRateLimits, parseCodexUsage } from "../src/usage-vendors.ts";
+import { codex, detectVendor, fetchJson, glm, parseCodexRateLimits, parseCodexUsage, parseGlmQuota } from "../src/usage-vendors.ts";
 
 // Live 2026-11-18 responses (identifiers redacted). Plan pro reports only a weekly window.
 const WHAM_WEEKLY_ONLY = {
@@ -112,4 +112,102 @@ test("detectVendor: Codex by model.api, nothing for other models", () => {
   assert.equal(detectVendor(model), codex);
   assert.equal(detectVendor({ api: "openai-responses", provider: "openai-codex" } as typeof model), undefined);
   assert.equal(detectVendor(undefined), undefined);
+});
+
+// ---- GLM ----
+
+// Live 2026-11-18 response, plan lite: 5h, weekly and monthly (tool calls) pools.
+const GLM_LITE = {
+  code: 200,
+  msg: "Operation successful",
+  data: {
+    limits: [
+      { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 7, nextResetTime: 1795008753799 },
+      { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 4, nextResetTime: 1795421038983 },
+      {
+        type: "TIME_LIMIT",
+        unit: 5,
+        number: 1,
+        usage: 100,
+        currentValue: 2,
+        remaining: 98,
+        percentage: 2,
+        nextResetTime: 1797153353984,
+        usageDetails: [{ modelCode: "search-prime", usage: 1 }, { modelCode: "web-reader", usage: 1 }, { modelCode: "zread", usage: 0 }],
+      },
+    ],
+    level: "lite",
+  },
+  success: true,
+};
+const GLM_USAGE = {
+  fiveHour: 7,
+  fiveHourResetAt: new Date(1795008753799),
+  sevenDay: 4,
+  sevenDayResetAt: new Date(1795421038983),
+  monthly: 2,
+  monthlyResetAt: new Date(1797153353984),
+};
+
+test("GLM quota: the lite plan's 5h, weekly and monthly pools map by type+unit+number, resets in ms", () => {
+  assert.deepEqual(parseGlmQuota(GLM_LITE), GLM_USAGE);
+});
+
+test("GLM quota: a plan without the weekly pool, pools in another order, unknown pools dropped", () => {
+  const body = {
+    data: {
+      limits: [
+        { type: "TIME_LIMIT", unit: 5, number: 1, percentage: 150 },
+        { type: "TOKENS_LIMIT", unit: 3, number: 1, percentage: 90, nextResetTime: 1795008753799 },
+        { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 33.4, nextResetTime: 0 },
+      ],
+    },
+  };
+  assert.deepEqual(parseGlmQuota(body), { fiveHour: 33, fiveHourResetAt: null, sevenDay: null, sevenDayResetAt: null, monthly: 100, monthlyResetAt: null });
+});
+
+test("GLM quota: malformed bodies give no data", () => {
+  const bodies = [
+    null,
+    "x",
+    {},
+    { code: 401, msg: "token expired", success: false },
+    { data: { limits: null } },
+    { data: { limits: [] } },
+    { data: { limits: [null, { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: "7" }, { type: "OTHER", unit: 3, number: 5, percentage: 7 }] } },
+  ];
+  for (const body of bodies) assert.equal(parseGlmQuota(body), null, JSON.stringify(body));
+});
+
+const glmModel = (baseUrl: string) => ({ api: "openai-completions", baseUrl }) as typeof model;
+
+test("GLM fetch: GET the quota endpoint on the model's host with the raw key", async (t) => {
+  const cases = [
+    ["https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn"],
+    ["https://bigmodel.cn/api/anthropic", "https://open.bigmodel.cn"],
+    ["https://api.z.ai/api/coding/paas/v4", "https://api.z.ai"],
+  ];
+  for (const [baseUrl, host] of cases) {
+    const fetch = t.mock.method(globalThis, "fetch", async () => json(GLM_LITE));
+    assert.deepEqual(await glm.fetch(glmModel(baseUrl!), "key.secret"), GLM_USAGE);
+    const [url, init] = fetch.mock.calls[0]!.arguments as unknown as [string, RequestInit];
+    assert.equal(url, `${host}/api/monitor/usage/quota/limit`);
+    assert.deepEqual(init.headers, { Authorization: "key.secret", "Accept-Language": "en-US,en" });
+  }
+});
+
+test("GLM fetch: non-2xx or a bad shape give null", async (t) => {
+  for (const reply of [() => json(GLM_LITE, 401), () => json({ code: 1001, success: false })]) {
+    t.mock.method(globalThis, "fetch", async () => reply());
+    assert.equal(await glm.fetch(glmModel("https://open.bigmodel.cn/api/paas/v4"), "k"), null);
+  }
+});
+
+test("detectVendor: GLM by baseUrl host, whatever the provider or api", () => {
+  for (const baseUrl of ["https://open.bigmodel.cn/api/paas/v4", "https://bigmodel.cn/api/anthropic", "https://api.z.ai/api/anthropic"]) {
+    assert.equal(detectVendor(glmModel(baseUrl)), glm, baseUrl);
+  }
+  for (const baseUrl of ["https://api.openai.com/v1", "https://evil.bigmodel.cn.example.com/v1", "https://z.ai/v1", "not a url", ""]) {
+    assert.equal(detectVendor(glmModel(baseUrl)), undefined, baseUrl);
+  }
 });

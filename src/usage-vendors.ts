@@ -81,6 +81,48 @@ export const codex: UsageVendor = {
   },
 };
 
-const VENDORS: UsageVendor[] = [codex];
+/** GLM `data.limits[]` pools, matched by type+unit+number (never index); any other pool is dropped. */
+const GLM_WINDOWS: Record<string, "fiveHour" | "sevenDay" | "monthly"> = {
+  "TOKENS_LIMIT/3/5": "fiveHour",
+  "TOKENS_LIMIT/6/1": "sevenDay",
+  "TIME_LIMIT/5/1": "monthly",
+};
+
+/** `GET /api/monitor/usage/quota/limit`'s body: `data.limits[]` with `percentage` used and `nextResetTime` in epoch ms. */
+export function parseGlmQuota(body: unknown): UsageLimit | null {
+  if (!isObject(body) || !isObject(body.data) || !Array.isArray(body.data.limits)) return null;
+  const usage: UsageLimit = { fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null };
+  for (const limit of body.data.limits) {
+    if (!isObject(limit)) continue;
+    const window = GLM_WINDOWS[`${limit.type}/${limit.unit}/${limit.number}`];
+    const used = percent(limit.percentage);
+    if (!window || used === null) continue;
+    usage[window] = used;
+    usage[`${window}ResetAt`] = typeof limit.nextResetTime === "number" ? resetDate(limit.nextResetTime / 1000) : null;
+  }
+  return usage.fiveHour === null && usage.sevenDay === null && usage.monthly === null ? null : usage;
+}
+
+/** The quota host for a GLM model's baseUrl (CN or international), or undefined for any other model. */
+function glmHost(model: UsageModel): string | undefined {
+  const host = URL.parse(model.baseUrl)?.hostname;
+  if (host === "open.bigmodel.cn" || host === "bigmodel.cn") return "https://open.bigmodel.cn";
+  if (host === "api.z.ai") return "https://api.z.ai"; // international host unverified live
+  return undefined;
+}
+
+export const glm: UsageVendor = {
+  name: "glm",
+  detect: (model) => glmHost(model) !== undefined,
+  async fetch(model, apiKey) {
+    const url = `${glmHost(model)}/api/monitor/usage/quota/limit`;
+    // The raw key, no Bearer: the documented form.
+    const usage = parseGlmQuota(await fetchJson(url, { Authorization: apiKey, "Accept-Language": "en-US,en" }));
+    if (!usage) debug("glm: no usable limits in quota/limit");
+    return usage;
+  },
+};
+
+const VENDORS: UsageVendor[] = [codex, glm];
 
 export const detectVendor = (model: UsageModel | undefined): UsageVendor | undefined => (model ? VENDORS.find((vendor) => vendor.detect(model)) : undefined);
