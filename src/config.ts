@@ -113,6 +113,7 @@ export interface HudConfig {
     contextWarningThreshold: number;
     contextCriticalThreshold: number;
     usageThreshold: number;
+    /** Shows the Weekly part at or above this % used; it gates the Monthly part too. */
     sevenDayThreshold: number;
     environmentThreshold: number;
     /** The External usage snapshot file. "" = off. */

@@ -62,7 +62,7 @@ export interface UsageLimit {
   fiveHourResetAt: Date | null;
   sevenDayResetAt: Date | null;
   monthlyResetAt: Date | null;
-  /** A Balance (e.g. "¥4.12"), shown instead of the Limit windows. */
+  /** A Balance (GLOSSARY.md, e.g. "¥4.12"), not a Limit window: carried here because claude-hud's UsageData shape holds it. Shown instead of the windows. */
   balanceLabel?: string | null;
 }
 

@@ -13,7 +13,11 @@ interface ExternalUsageSnapshot {
 
 const MAX_BALANCE_LABEL_LENGTH = 50;
 
-function parseUsagePercent(value: unknown): number | null {
+/** A UsageLimit with every Limit window null; a fresh object, so callers can fill it in. */
+export const emptyUsageLimit = (): UsageLimit => ({ fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null });
+
+/** A percent rounded and clamped to 0-100; null unless a finite number. */
+export function parseUsagePercent(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return Math.round(Math.min(100, Math.max(0, value)));
 }
@@ -66,7 +70,7 @@ export function getUsageFromExternalSnapshot(config: HudConfig, now = Date.now()
     if (parsed.five_hour && parsed.five_hour.resets_at != null && fiveHourResetAt === null) return null;
     if (parsed.seven_day && parsed.seven_day.resets_at != null && sevenDayResetAt === null) return null;
 
-    const usage: UsageLimit = { fiveHour, sevenDay, monthly: null, fiveHourResetAt, sevenDayResetAt, monthlyResetAt: null };
+    const usage: UsageLimit = { ...emptyUsageLimit(), fiveHour, sevenDay, fiveHourResetAt, sevenDayResetAt };
     if (balanceLabel !== null) usage.balanceLabel = balanceLabel;
     return usage;
   } catch {

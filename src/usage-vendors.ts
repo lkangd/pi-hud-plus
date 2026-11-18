@@ -1,13 +1,12 @@
 // Native Usage limits: one entry per vendor, detected from the current model. Adding a vendor = a detect plus a fetch.
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createDebug } from "./debug.ts";
-import { sanitizeBalanceLabel } from "./external-usage.ts";
+import { emptyUsageLimit, parseUsagePercent as percent, sanitizeBalanceLabel } from "./external-usage.ts";
 import type { UsageLimit } from "./types.ts";
 
 export type UsageModel = NonNullable<ExtensionContext["model"]>;
 
 export interface UsageVendor {
-  name: string;
   /** From the model, not the provider id, so renamed and custom providers work. */
   detect(model: UsageModel): boolean;
   /** The vendor's Usage limit or Balance; null on any failure (logged, never thrown). */
@@ -35,10 +34,6 @@ export async function fetchJson(url: string, headers: Record<string, string>, ti
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
-function percent(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? Math.round(Math.min(100, Math.max(0, value))) : null;
-}
-
 /** Epoch seconds → Date; null when missing or ≤0. */
 function resetDate(value: unknown): Date | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? new Date(value * 1000) : null;
@@ -46,7 +41,7 @@ function resetDate(value: unknown): Date | null {
 
 /** Codex windows mapped by length in minutes (300 → 5h, 10080 → weekly); any other length is dropped. */
 function codexLimit(windows: unknown[], minutesOf: (window: Record<string, unknown>) => unknown): UsageLimit | null {
-  const usage: UsageLimit = { fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null };
+  const usage = emptyUsageLimit();
   for (const window of windows) {
     if (!isObject(window)) continue;
     const used = percent(window.used_percent);
@@ -73,7 +68,6 @@ export function parseCodexRateLimits(data: unknown): UsageLimit | null {
 }
 
 export const codex: UsageVendor = {
-  name: "codex",
   detect: (model) => model.api === "openai-codex-responses",
   async fetch(_model, apiKey) {
     const usage = parseCodexUsage(await fetchJson("https://chatgpt.com/backend-api/wham/usage", { Authorization: `Bearer ${apiKey}` }));
@@ -92,7 +86,7 @@ const GLM_WINDOWS: Record<string, "fiveHour" | "sevenDay" | "monthly"> = {
 /** `GET /api/monitor/usage/quota/limit`'s body: `data.limits[]` with `percentage` used and `nextResetTime` in epoch ms. */
 export function parseGlmQuota(body: unknown): UsageLimit | null {
   if (!isObject(body) || !isObject(body.data) || !Array.isArray(body.data.limits)) return null;
-  const usage: UsageLimit = { fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null };
+  const usage = emptyUsageLimit();
   for (const limit of body.data.limits) {
     if (!isObject(limit)) continue;
     const window = GLM_WINDOWS[`${limit.type}/${limit.unit}/${limit.number}`];
@@ -113,7 +107,6 @@ function glmHost(model: UsageModel): string | undefined {
 }
 
 export const glm: UsageVendor = {
-  name: "glm",
   detect: (model) => glmHost(model) !== undefined,
   async fetch(model, apiKey) {
     const url = `${glmHost(model)}/api/monitor/usage/quota/limit`;
@@ -134,11 +127,10 @@ export function parseDeepSeekBalance(body: unknown): UsageLimit | null {
     .map((info) => `${CURRENCY_SYMBOLS[info.currency as string] ?? `${info.currency} `}${info.total_balance}`);
   const balanceLabel = sanitizeBalanceLabel(parts.join(" "));
   if (!balanceLabel) return null;
-  return { fiveHour: null, sevenDay: null, monthly: null, fiveHourResetAt: null, sevenDayResetAt: null, monthlyResetAt: null, balanceLabel };
+  return { ...emptyUsageLimit(), balanceLabel };
 }
 
 export const deepseek: UsageVendor = {
-  name: "deepseek",
   detect: (model) => URL.parse(model.baseUrl)?.hostname === "api.deepseek.com",
   async fetch(_model, apiKey) {
     const usage = parseDeepSeekBalance(await fetchJson("https://api.deepseek.com/user/balance", { Authorization: `Bearer ${apiKey}` }));
