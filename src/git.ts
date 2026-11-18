@@ -1,6 +1,8 @@
 // Ported from claude-hud src/git.ts. Changes for pi: commands go through pi.exec (which resolves with an
 // exit code instead of rejecting), every command passes --no-optional-locks, diff and rev-list are gated
-// by config, and the branch (rev-parse) and branchUrl (remote get-url) come from elsewhere / are dropped.
+// by config, the branch (rev-parse) comes from pi's footerData, and branchUrl becomes githubUrl (the branch isn't known here).
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export type Exec = ExtensionAPI["exec"];
@@ -23,6 +25,8 @@ export interface FileStats {
   deleted: number;
   untracked: number;
   trackedFiles: TrackedFile[];
+  /** The repo root that trackedFiles' paths are relative to; set when showFileStats collected them. */
+  root?: string;
 }
 
 export interface GitStatus {
@@ -32,11 +36,15 @@ export interface GitStatus {
   behind: number;
   fileStats?: FileStats;
   lineDiff?: LineDiff;
+  /** The GitHub origin's https URL, for linking the branch. */
+  githubUrl?: string;
 }
 
 export interface GitStatusOptions {
   showAheadBehind: boolean;
   showFileStats: boolean;
+  /** Look up the GitHub origin for the branch link (expanded layout only). */
+  linkBranch: boolean;
 }
 
 /** Runs `git --no-optional-locks <args>`, rejecting like execFile on a non-zero exit or timeout. */
@@ -75,6 +83,15 @@ export async function getGitStatus(exec: Exec, cwd: string, options: GitStatusOp
     } catch {
       // Ignore errors
     }
+    // claude-hud sorts at render time; here it runs once per git job instead of every frame.
+    if (fileStats) {
+      try {
+        fileStats.root = (await git(exec, cwd, ['rev-parse', '--show-toplevel'], 1000)).trim();
+        await sortByMtime(fileStats.trackedFiles, fileStats.root);
+      } catch {
+        // Keep git's order
+      }
+    }
   }
 
   // Get ahead/behind counts
@@ -93,7 +110,19 @@ export async function getGitStatus(exec: Exec, cwd: string, options: GitStatusOp
     }
   }
 
-  return { isDirty, ahead, behind, fileStats, lineDiff };
+  let githubUrl: string | undefined;
+  if (options.linkBranch) try {
+    const httpsBase = (await git(exec, cwd, ['remote', 'get-url', 'origin'], 1000))
+      .trim()
+      .replace(/^git@github\.com:/, 'https://github.com/')
+      .replace(/^ssh:\/\/git@github\.com\//, 'https://github.com/')
+      .replace(/\.git$/, '');
+    if (httpsBase.startsWith('https://github.com/')) githubUrl = httpsBase;
+  } catch {
+    // No remote or not GitHub
+  }
+
+  return { isDirty, ahead, behind, fileStats, lineDiff, githubUrl };
 }
 
 /**
@@ -201,6 +230,13 @@ function parseNumstat(numstatOutput: string, trackedPaths: Set<string>): { total
   }
 
   return { totalDiff, perFileDiff };
+}
+
+/** Newest-modified first; files that can't be stat'd (deleted) go last. */
+async function sortByMtime(files: TrackedFile[], root: string): Promise<void> {
+  const mtimes = new Map(await Promise.all(files.map(async (file) =>
+    [file, await stat(path.resolve(root, file.fullPath)).then((s) => s.mtimeMs, () => 0)] as const)));
+  files.sort((a, b) => mtimes.get(b)! - mtimes.get(a)!);
 }
 
 function applyLineDiffsToFiles(files: TrackedFile[], perFileDiff: Map<string, LineDiff>): void {

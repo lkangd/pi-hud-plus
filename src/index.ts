@@ -15,7 +15,7 @@ import { hasTickingElement, startClock } from "./clock.ts";
 import { registerCommands } from "./commands.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { runExtraCmd } from "./extra-cmd.ts";
-import { getGitStatus } from "./git.ts";
+import { getGitStatus, type GitStatusOptions } from "./git.ts";
 import { getMemoryUsage } from "./memory.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
@@ -147,7 +147,7 @@ export default function piHud(pi: ExtensionAPI): void {
   const readSession = createSessionReader();
 
   /** Async git refresh: at most one run in flight, triggers coalesced, runs spaced by the throttle, plus a backstop. */
-  const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: HudConfig["gitStatus"]): BackgroundJob => {
+  const startGitJob = (gen: number, cwd: string, footerData: ReadonlyFooterDataProvider, options: GitStatusOptions): BackgroundJob => {
     let inFlight = false;
     let pending = false;
     let lastRun = -Infinity;
@@ -253,7 +253,7 @@ export default function piHud(pi: ExtensionAPI): void {
       current.requestRender = () => tui.requestRender();
       current.footerData = footerData;
       current.snapshot = { ...current.snapshot, model: modelInfo(ctx.model, footerData) };
-      if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, config.gitStatus);
+      if (config.gitStatus.enabled) current.git = startGitJob(current.generation, ctx.cwd, footerData, { ...config.gitStatus, linkBranch: config.lineLayout === "expanded" });
       return {
         // Statuses are read live: pi requests a render whenever an extension sets one.
         render: (width) => renderHud({ ...current.snapshot, extensionStatuses: footerData.getExtensionStatuses() }, config, width),

@@ -5,6 +5,7 @@ import type { HudSnapshot, RenderContext } from "../types.ts";
 import { dim } from "./colors.ts";
 import { renderEnvironmentLine } from "./lines/environment.ts";
 import { renderContextLine } from "./lines/context.ts";
+import { renderGitFilesLine } from "./lines/git.ts";
 import { renderMemoryLine } from "./lines/memory.ts";
 import { renderPromptCacheLine } from "./lines/prompt-cache.ts";
 import { renderProjectLine } from "./lines/project.ts";
@@ -112,7 +113,9 @@ function renderExpanded(ctx: RenderContext): Array<{ line: string; isActivity: b
     lines.push({ line, isActivity: ACTIVITY_ELEMENTS.has(element) });
   }
 
-  // claude-hud's git files Line goes here, always last.
+  // Last of the Element Lines, as in claude-hud; the token and extension status Lines still follow.
+  const gitFilesLine = renderGitFilesLine(ctx);
+  if (gitFilesLine) lines.push({ line: gitFilesLine, isActivity: false });
   return lines;
 }
 

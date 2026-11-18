@@ -1,11 +1,12 @@
 // Ported from claude-hud tests/git.test.js. The branch now comes from pi's footerData, so the
-// getGitBranch and branch-name tests are gone; branchUrl was not ported. Commands run through a real
+// getGitBranch and branch-name tests are gone, and the branch URL is built at render time from githubUrl. Commands run through a real
 // execFile-backed exec shaped like pi.exec.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { getGitStatus, type Exec } from "../src/git.ts";
 
@@ -20,7 +21,7 @@ const exec: Exec = (command, args, options) => {
   });
 };
 
-const ALL = { showAheadBehind: true, showFileStats: true };
+const ALL = { showAheadBehind: true, showFileStats: true, linkBranch: true };
 
 async function withRepo(fn: (dir: string) => Promise<void>, init = true) {
   const dir = await mkdtemp(path.join(tmpdir(), "pi-hud-git-"));
@@ -43,7 +44,7 @@ const commitEmpty = (dir: string) => git(dir, "commit", "--allow-empty", "-m", "
 test("getGitStatus returns clean state for a non-git directory", async () => {
   await withRepo(async (dir) => {
     const result = await getGitStatus(exec, dir, ALL);
-    assert.deepEqual(result, { isDirty: false, ahead: 0, behind: 0, fileStats: undefined, lineDiff: undefined });
+    assert.deepEqual(result, { isDirty: false, ahead: 0, behind: 0, fileStats: undefined, lineDiff: undefined, githubUrl: undefined });
   }, false);
 });
 
@@ -89,6 +90,35 @@ test("getGitStatus counts modified files", async () => {
     const result = await getGitStatus(exec, dir, ALL);
     assert.equal(result.fileStats?.modified, 1);
     assert.equal(result.fileStats?.untracked, 0);
+  });
+});
+
+test("getGitStatus lists tracked files newest-modified first", async () => {
+  await withRepo(async (dir) => {
+    for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(path.join(dir, name), "x");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "add files");
+    for (const name of ["a.txt", "b.txt", "c.txt"]) await writeFile(path.join(dir, name), "y");
+    await utimes(path.join(dir, "a.txt"), 1, 1);
+    await utimes(path.join(dir, "b.txt"), 3, 3);
+    await utimes(path.join(dir, "c.txt"), 2, 2);
+    const result = await getGitStatus(exec, dir, ALL);
+    assert.deepEqual(result.fileStats?.trackedFiles.map((f) => f.basename), ["b.txt", "c.txt", "a.txt"]);
+  });
+});
+
+test("getGitStatus sorts by mtime from a subdirectory, resolving paths from the repo root", async () => {
+  await withRepo(async (dir) => {
+    await mkdir(path.join(dir, "sub"));
+    for (const name of ["a.txt", "sub/b.txt"]) await writeFile(path.join(dir, name), "x");
+    git(dir, "add", ".");
+    git(dir, "commit", "-m", "add files");
+    for (const name of ["a.txt", "sub/b.txt"]) await writeFile(path.join(dir, name), "y");
+    await utimes(path.join(dir, "a.txt"), 2, 2);
+    await utimes(path.join(dir, "sub/b.txt"), 1, 1);
+    const result = await getGitStatus(exec, path.join(dir, "sub"), ALL);
+    assert.deepEqual(result.fileStats?.trackedFiles.map((f) => f.fullPath), ["a.txt", "sub/b.txt"]);
+    assert.equal(result.fileStats?.root, realpathSync(dir));
   });
 });
 
@@ -219,19 +249,43 @@ test("getGitStatus counts commits ahead of and behind the upstream", async () =>
   });
 });
 
-test("diff and rev-list run only when their options are on, and every command skips optional locks", async () => {
+test("diff, rev-parse, rev-list and remote run only when their options are on, and every command skips optional locks", async () => {
   await withRepo(async (dir) => {
     commitEmpty(dir);
     await writeFile(path.join(dir, "dirty.txt"), "x");
     calls.length = 0;
-    const result = await getGitStatus(exec, dir, { showAheadBehind: false, showFileStats: false });
+    const result = await getGitStatus(exec, dir, { showAheadBehind: false, showFileStats: false, linkBranch: false });
     assert.equal(result.isDirty, true);
     assert.equal(result.lineDiff, undefined);
-    assert.deepEqual(calls.map((c) => c.find((a) => ["status", "diff", "rev-list"].includes(a))), ["status"]);
+    assert.deepEqual(calls.map((c) => c.find((a) => ["status", "diff", "rev-parse", "rev-list", "remote"].includes(a))), ["status"]);
 
     calls.length = 0;
     await getGitStatus(exec, dir, ALL);
-    assert.deepEqual(calls.map((c) => c.find((a) => ["status", "diff", "rev-list"].includes(a))), ["status", "diff", "rev-list"]);
+    assert.deepEqual(calls.map((c) => c.find((a) => ["status", "diff", "rev-parse", "rev-list", "remote"].includes(a))), ["status", "diff", "rev-parse", "rev-list", "remote"]);
     for (const call of calls) assert.ok(call.includes("--no-optional-locks"), call.join(" "));
+  });
+});
+
+for (const [kind, remote, expected] of [
+  ["HTTPS", "https://github.com/example/claude-hud.git", "https://github.com/example/claude-hud"],
+  ["SSH", "git@github.com:example/claude-hud.git", "https://github.com/example/claude-hud"],
+  ["ssh:// URL", "ssh://git@github.com/example/claude-hud.git", "https://github.com/example/claude-hud"],
+  ["non-GitHub HTTPS", "https://gitlab.com/example/claude-hud.git", undefined],
+  ["non-GitHub SSH", "git@gitlab.com:example/claude-hud.git", undefined],
+] as const) {
+  test(`getGitStatus githubUrl from ${kind} origin remotes`, async () => {
+    await withRepo(async (dir) => {
+      commitEmpty(dir);
+      git(dir, "remote", "add", "origin", remote);
+      const result = await getGitStatus(exec, dir, ALL);
+      assert.equal(result.githubUrl, expected);
+    });
+  });
+}
+
+test("getGitStatus has no githubUrl without an origin", async () => {
+  await withRepo(async (dir) => {
+    commitEmpty(dir);
+    assert.equal((await getGitStatus(exec, dir, ALL)).githubUrl, undefined);
   });
 });

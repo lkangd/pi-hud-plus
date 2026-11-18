@@ -78,7 +78,7 @@ Top level:
 | `enabled` | `true` | boolean. When off, no git commands run |
 | `showDirty` | `true` | boolean: `*` after the branch when the tree is dirty |
 | `showAheadBehind` | `false` | boolean: `↑n ↓n` against the upstream |
-| `showFileStats` | `false` | boolean: line diff `[+n -n]` (expanded) or file counts `!n +n ✘n ?n` (compact) |
+| `showFileStats` | `false` | boolean: line diff `[+n -n]` plus a last Line listing up to 6 changed files, newest first (expanded), or file counts `!n +n ✘n ?n` (compact) |
 | `branchOverflow` | `"truncate"` | `"truncate"` keeps project and git in one segment; `"wrap"` gives git its own segment |
 | `pushWarningThreshold` | `0` (off) | colour `↑n` with `colors.warning` from this many unpushed commits |
 | `pushCriticalThreshold` | `0` (off) | colour `↑n` with `colors.critical` from this many unpushed commits |
@@ -204,8 +204,6 @@ Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command fa
 - **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config) and `display.showExtensionStatuses`.
 - **Debug log**: `DEBUG=pi-hud-plus` instead of `DEBUG=claude-hud`, written to a file instead of stderr.
 - **Commands**: `/pi-hud:setup` and `/pi-hud:configure` replace `/claude-hud:setup` and `/claude-hud:configure`. There's no statusline to install, so setup only writes config, and both use one settings list instead of a series of questions. There's no config file watching: after editing the file by hand, run `/reload`.
-- **No git files Line**: with `showFileStats` on, claude-hud adds a Line listing the changed files; pi-hud-plus shows only the counts in the git Element.
-- **No branch link**: claude-hud links the branch name to its remote (`branchUrl`) with a terminal hyperlink; pi-hud-plus shows plain text.
 - **`max` thinking level**: pi's `max` level, which claude-hud has no equivalent for, shows as `◕` like `xhigh`.
 - **Chinese relative times**: keep claude-hud's unit style, so `3m前`, not `3分钟前`.
 - A pasted claude-hud config still loads: fields that are unknown or have been dropped are ignored.

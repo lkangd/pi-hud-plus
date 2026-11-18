@@ -474,12 +474,13 @@ test("the clock stops while Displaced", async () => {
 
 // ---- Git job ----
 
-/** A pi.exec fake: records each git call; while held, calls stay pending until released. */
+/** A pi.exec fake: records each git status call (one per run); while held, calls stay pending until released. There's no origin remote. */
 function fakeExec(stdout = " M file.txt\n") {
   const calls: { args: string[]; cwd?: string; release(): void }[] = [];
   let held = false;
   const exec = (_command: string, args: string[], options?: { cwd?: string }) =>
     new Promise((resolve) => {
+      if (args.includes("remote")) return resolve({ stdout: "", stderr: "", code: 2, killed: false, truncated: false });
       const release = () => resolve({ stdout, stderr: "", code: 0, killed: false, truncated: false });
       calls.push({ args, cwd: options?.cwd, release });
       if (!held) release();
