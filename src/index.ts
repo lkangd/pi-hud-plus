@@ -21,7 +21,8 @@ import { getMemoryUsage } from "./memory.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
 import { createSpeedTracker, SPEED_WINDOW_MS } from "./speed-tracker.ts";
-import type { HudContext, HudEnvironment, HudSnapshot, HudTool } from "./types.ts";
+import type { HudContext, HudEnvironment, HudSnapshot, HudTool, UsageLimit } from "./types.ts";
+import { codex, detectVendor, parseCodexRateLimits, type UsageModel } from "./usage-vendors.ts";
 
 interface Session {
   generation: number;
@@ -36,8 +37,8 @@ interface Session {
   speedExpiry?: ReturnType<typeof setTimeout>;
   git?: BackgroundJob;
   extra?: BackgroundJob;
-  /** Re-reads the External usage snapshot. Absent when usage is off or has no externalUsagePath. */
-  readUsage?: () => void;
+  /** Absent when showUsage is off. */
+  usage?: UsageJob;
   footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
@@ -102,6 +103,19 @@ interface BackgroundJob {
 const GIT_THROTTLE_MS = 2000;
 const GIT_BACKSTOP_MS = 30_000;
 const EXTRA_BACKSTOP_MS = 30_000;
+/** A fetch is skipped while the current vendor's data is younger than this. */
+const USAGE_SKIP_MS = 60_000;
+const USAGE_BACKSTOP_MS = 5 * 60_000;
+
+/** The usage job: the current vendor's Usage limit, else the External usage snapshot. */
+interface UsageJob extends BackgroundJob {
+  /** The model changed; another vendor clears the shown data until its own arrives. */
+  selectModel(model: UsageModel): void;
+  /** A provider stream frame; Codex's codex.rate_limits carries its Usage limit. */
+  frame(data: unknown): void;
+  /** Re-shows the data, re-reading the External usage snapshot (for freshness) while there's no native data. */
+  show(): void;
+}
 
 // On globalThis, not module scope: /reload re-imports this module, and the notice must fire once per pi process.
 const NOTICE_SHOWN = Symbol.for("pi-hud-plus.displacedNoticeShown");
@@ -220,6 +234,72 @@ export default function piHud(pi: ExtensionAPI): void {
     return { trigger: () => void run(), stop: () => clearInterval(backstop) };
   };
 
+  /** Usage refresh: on trigger and a backstop, at most one fetch in flight, skipped while the data is fresh. Never from render. */
+  const startUsageJob = (
+    gen: number,
+    config: HudConfig,
+    model: UsageModel | undefined,
+    registry: ExtensionContext["modelRegistry"],
+    onShown: () => void,
+  ): UsageJob => {
+    let vendor = detectVendor(model);
+    let native: UsageLimit | null = null;
+    let nativeAt = -Infinity;
+    // Bumped on a vendor switch: the old vendor's in-flight fetch is then ignored and doesn't block the new one.
+    let epoch = 0;
+    let inFlight: number | undefined;
+
+    const show = () => {
+      if (!isLive(gen)) return;
+      const usageLimit = native ?? getUsageFromExternalSnapshot(config);
+      if (JSON.stringify(usageLimit) !== JSON.stringify(session!.snapshot.usageLimit ?? null)) update(gen, { usageLimit });
+      onShown();
+    };
+    const setNative = (usage: UsageLimit | null) => {
+      native = usage;
+      // A failure isn't fresh data: the next trigger retries.
+      nativeAt = usage ? Date.now() : -Infinity;
+      show();
+    };
+
+    const run = async () => {
+      show();
+      if (!isLive(gen) || !vendor || !model || inFlight === epoch || Date.now() - nativeAt < USAGE_SKIP_MS) return;
+      const mine = (inFlight = epoch);
+      const [current, forModel] = [vendor, model];
+      const usage = await registry
+        .getApiKeyAndHeaders(forModel)
+        .then((auth) => (auth.ok && auth.apiKey ? current.fetch(forModel, auth.apiKey) : null))
+        .catch(() => null);
+      if (inFlight === mine) inFlight = undefined;
+      if (mine === epoch && isLive(gen)) setNative(usage);
+    };
+
+    const backstop = setInterval(() => void run(), USAGE_BACKSTOP_MS);
+    backstop.unref?.();
+    void run();
+    return {
+      trigger: () => void run(),
+      stop: () => clearInterval(backstop),
+      show,
+      selectModel(next) {
+        model = next;
+        const nextVendor = detectVendor(next);
+        if (nextVendor !== vendor) {
+          vendor = nextVendor;
+          epoch++;
+          native = null;
+          nativeAt = -Infinity;
+        }
+        void run();
+      },
+      frame(data) {
+        const usage = vendor === codex ? parseCodexRateLimits(data) : null;
+        if (usage && isLive(gen)) setNative(usage);
+      },
+    };
+  };
+
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
     const config = loadConfig(getAgentDir());
@@ -245,22 +325,24 @@ export default function piHud(pi: ExtensionAPI): void {
       tools: new Map(),
       breakdown,
     });
-    if (config.display.showUsage && config.display.externalUsagePath) {
-      // A small sync read, on session_start, agent_end and the clock tick; never in render. Freshness is checked per read.
-      current.readUsage = () => {
-        const usageLimit = getUsageFromExternalSnapshot(config);
-        if (JSON.stringify(usageLimit) !== JSON.stringify(current.snapshot.usageLimit ?? null)) update(current.generation, { usageLimit });
-      };
-      current.readUsage();
-    }
-    if (hasTickingElement(config)) {
-      current.stopClock = startClock((now) => {
-        update(current.generation, { now });
-        current.readUsage?.();
-        // Memory is sampled here, never in render; the first reading lands on the first tick.
-        if (config.display.showMemoryUsage) void getMemoryUsage().then((memory) => update(current.generation, { memory }));
-      });
-    }
+    const tick = (now: number) => {
+      update(current.generation, { now });
+      current.usage?.show();
+      // Memory is sampled here, never in render; the first reading lands on the first tick.
+      if (config.display.showMemoryUsage) void getMemoryUsage().then((memory) => update(current.generation, { memory }));
+    };
+    // A shown Usage limit's reset countdown ticks too; with none (and no other ticking Element) there's no clock.
+    const syncClock = () => {
+      const wanted = hasTickingElement(config) || !!current.snapshot.usageLimit;
+      if (!isLive(current.generation) || wanted === !!current.stopClock) return;
+      if (wanted) current.stopClock = startClock(tick);
+      else {
+        current.stopClock!();
+        current.stopClock = undefined;
+      }
+    };
+    if (config.display.showUsage) current.usage = startUsageJob(current.generation, config, ctx.model, ctx.modelRegistry, syncClock);
+    syncClock();
     setFooter(ctx.ui, (tui, _theme, footerData) => {
       current.requestRender = () => tui.requestRender();
       current.footerData = footerData;
@@ -276,6 +358,7 @@ export default function piHud(pi: ExtensionAPI): void {
           current.stopClock?.();
           current.git?.stop();
           current.extra?.stop();
+          current.usage?.stop();
           current.displacedNotice = setTimeout(() => {
             if (globals[NOTICE_SHOWN]) return;
             globals[NOTICE_SHOWN] = true;
@@ -361,7 +444,9 @@ export default function piHud(pi: ExtensionAPI): void {
       session: readSession(pi, ctx, event.model),
     });
     clearLiveContext(s, ctx);
+    s.usage?.selectModel(event.model);
   });
+  pi.on("provider_stream_event", (event) => live()?.usage?.frame(event.data));
   // The run's system prompt options are what the agent actually loaded.
   pi.on("before_agent_start", (event) => {
     if (!live()?.snapshot.environment) return;
@@ -410,7 +495,7 @@ export default function piHud(pi: ExtensionAPI): void {
     clearSpeed(s);
     s.git?.trigger();
     s.extra?.trigger();
-    s.readUsage?.();
+    s.usage?.trigger();
     clearLiveContext(s, ctx);
   });
   pi.on("session_info_changed", (_event, ctx) => {
@@ -434,6 +519,7 @@ export default function piHud(pi: ExtensionAPI): void {
     stopClock?.();
     session.git?.stop();
     session.extra?.stop();
+    session.usage?.stop();
     session = undefined;
     generation++;
     // Only while we still own the footer: otherwise this would wipe the other extension's footer.

@@ -42,6 +42,7 @@ beforeEach(() => {
   // The once-per-process notice flag lives on globalThis so it survives /reload's module re-import.
   delete (globalThis as any)[Symbol.for("pi-hud-plus.displacedNoticeShown")];
   mock.timers.reset();
+  mock.restoreAll();
 });
 
 /** A session manager over `entries`; push to it to append. */
@@ -1012,4 +1013,180 @@ test("with showUsage off, no snapshot is read and no clock runs", async () => {
   mock.timers.tick(5000);
   assert.deepEqual(footer()!.render(80), []);
   assert.equal(tui.renders, renders, "no clock");
+});
+
+// ---- Native Usage limits (Codex) ----
+
+const CODEX = { name: "GPT-5.5", provider: "openai-codex", id: "gpt-5.5", api: "openai-codex-responses", contextWindow: 272_000 };
+const OTHER = { name: "Claude Opus 4.6", provider: "anthropic", id: "claude-opus-4-6", api: "anthropic-messages", contextWindow: 200_000 };
+// No reset_at, so the Line has no countdown; the parser tests cover resets.
+const wham = (weekly: number) => ({ rate_limit: { limit_reached: false, primary_window: { used_percent: weekly, limit_window_seconds: 604800 }, secondary_window: null } });
+const frame = (weekly: number, fiveHour: number) => ({
+  provider: "openai-codex",
+  api: "openai-codex-responses",
+  model: "gpt-5.5",
+  data: { type: "codex.rate_limits", rate_limits: { primary: { used_percent: weekly, window_minutes: 10080 }, secondary: { used_percent: fiveHour, window_minutes: 300 } } },
+});
+const USAGE_SKIP_MS = 60_000;
+const USAGE_BACKSTOP_MS = 5 * 60_000;
+
+/** A Codex session with a faked fetch (`reply` is what it answers; while held, calls stay pending) and model registry. */
+async function codexSetup(opts: { display?: object; auth?: object; model?: object } = {}) {
+  mock.timers.reset();
+  mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: Date.UTC(2026, 10, 18, 12) });
+  const cwd = projectWith({ showModel: false, showProject: false, usageBarEnabled: false, showResetLabel: false, ...opts.display });
+  const state = { reply: { body: wham(21) as unknown, status: 200 }, held: false };
+  const calls: { url: string; init: RequestInit; release(): void }[] = [];
+  mock.method(globalThis, "fetch", (url: string, init: RequestInit) =>
+    new Promise((resolve) => {
+      const { body, status } = state.reply;
+      const release = () => resolve(new Response(JSON.stringify(body), { status }));
+      calls.push({ url, init, release });
+      if (!state.held) release();
+    }),
+  );
+  const getApiKeyAndHeaders = mock.fn(async (_model: object) => opts.auth ?? { ok: true, apiKey: "tok" });
+  const { emit } = fakePi();
+  const env = fakeCtx({ cwd, model: opts.model ?? CODEX, modelRegistry: { isUsingOAuth: () => false, getProvider: () => undefined, getApiKeyAndHeaders } });
+  await emit("session_start", { reason: "startup" }, env.ctx);
+  await flush();
+  const shown = () => env.footer()!.render(80).map(strip);
+  return { ...env, emit, state, calls, getApiKeyAndHeaders, shown };
+}
+
+test("a Codex model's Usage limit is fetched from wham/usage on session_start with pi's credentials", async () => {
+  const { calls, getApiKeyAndHeaders, shown } = await codexSetup();
+  assert.equal(getApiKeyAndHeaders.mock.calls[0]!.arguments[0], CODEX);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.url, "https://chatgpt.com/backend-api/wham/usage");
+  assert.deepEqual(calls[0]!.init.headers, { Authorization: "Bearer tok" });
+  assert.deepEqual(shown(), ["Usage Weekly 21%"]);
+});
+
+test("a codex.rate_limits frame updates the Usage limit and repaints, so the next agent_end skips the fetch", async () => {
+  const { emit, ctx, tui, calls, shown } = await codexSetup();
+  const renders = tui.renders;
+  await emit("provider_stream_event", frame(30, 64), ctx);
+  assert.ok(tui.renders > renders);
+  assert.deepEqual(shown(), ["Usage 5h 64%"]);
+  await emit("provider_stream_event", { ...frame(0, 0), data: { type: "response.created" } }, ctx);
+  mock.timers.tick(USAGE_SKIP_MS - 1);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(calls.length, 1, "the frame's data is fresh");
+  mock.timers.tick(1);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(shown(), ["Usage Weekly 21%"]);
+});
+
+test("fetches are skipped while the data is under 60s old, and a 5-minute backstop refreshes it", async () => {
+  const { emit, ctx, calls, state, shown } = await codexSetup();
+  await emit("model_select", { model: CODEX, source: "set" }, ctx);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(calls.length, 1);
+  state.reply.body = wham(50);
+  mock.timers.tick(USAGE_BACKSTOP_MS);
+  await flush();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(shown(), ["Usage Weekly 50%"]);
+});
+
+test("at most one fetch is in flight", async () => {
+  const { emit, ctx, calls, state } = await codexSetup();
+  state.held = true;
+  mock.timers.tick(USAGE_SKIP_MS);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  await emit("agent_end", { messages: [] }, ctx);
+  await emit("model_select", { model: CODEX, source: "set" }, ctx);
+  await flush();
+  assert.equal(calls.length, 2);
+});
+
+test("a failed fetch, or no credentials, hides the Usage limit", async () => {
+  const { emit, ctx, state, shown } = await codexSetup();
+  state.reply = { body: { error: "unauthorized" }, status: 401 };
+  mock.timers.tick(USAGE_SKIP_MS);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.deepEqual(shown(), []);
+
+  for (const auth of [{ ok: false, error: "no auth" }, { ok: true }]) {
+    const none = await codexSetup({ auth });
+    assert.equal(none.calls.length, 0, JSON.stringify(auth));
+    assert.deepEqual(none.shown(), []);
+  }
+});
+
+test("switching to another vendor clears the shown data, and an in-flight result for the old one is ignored", async () => {
+  const { emit, ctx, calls, state, shown } = await codexSetup();
+  await emit("model_select", { model: OTHER, source: "set" }, ctx);
+  assert.deepEqual(shown(), []);
+  assert.equal(calls.length, 1, "no fetch for a vendor without native data");
+
+  state.held = true;
+  await emit("model_select", { model: CODEX, source: "set" }, ctx);
+  await flush();
+  assert.equal(calls.length, 2, "a new vendor fetches at once");
+  await emit("model_select", { model: OTHER, source: "set" }, ctx);
+  calls[1]!.release();
+  await flush();
+  assert.deepEqual(shown(), []);
+});
+
+test("native data beats the External usage snapshot, which shows for other vendors", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "pi-hud-usage-")), "usage.json");
+  writeFileSync(file, JSON.stringify({ updated_at: Date.UTC(2026, 10, 18, 12), five_hour: { used_percentage: 42 } }));
+  const { emit, ctx, shown } = await codexSetup({ display: { externalUsagePath: file } });
+  assert.deepEqual(shown(), ["Usage Weekly 21%"]);
+  await emit("model_select", { model: OTHER, source: "set" }, ctx);
+  assert.deepEqual(shown(), ["Usage 5h 42%"]);
+});
+
+test("the clock runs only while a Usage limit is shown", async () => {
+  const { emit, ctx, tui, shown } = await codexSetup();
+  let renders = tui.renders;
+  mock.timers.tick(1000);
+  assert.equal(tui.renders, renders + 1, "a native reset needs the clock");
+  await emit("model_select", { model: OTHER, source: "set" }, ctx);
+  assert.deepEqual(shown(), []);
+  renders = tui.renders;
+  mock.timers.tick(5000);
+  assert.equal(tui.renders, renders, "no data, no clock");
+});
+
+test("with showUsage off nothing is fetched and frames are ignored", async () => {
+  const { emit, ctx, calls, getApiKeyAndHeaders, shown } = await codexSetup({ display: { showUsage: false } });
+  await emit("provider_stream_event", frame(30, 64), ctx);
+  await emit("agent_end", { messages: [] }, ctx);
+  mock.timers.tick(USAGE_BACKSTOP_MS);
+  await flush();
+  assert.equal(calls.length + getApiKeyAndHeaders.mock.callCount(), 0);
+  assert.deepEqual(shown(), []);
+});
+
+test("nothing is fetched while Displaced, and a result landing after shutdown is ignored", async () => {
+  const displaced = await codexSetup();
+  displaced.takeFooter();
+  mock.timers.tick(USAGE_BACKSTOP_MS * 2);
+  await displaced.emit("agent_end", { messages: [] }, displaced.ctx);
+  await displaced.emit("model_select", { model: CODEX, source: "set" }, displaced.ctx);
+  await flush();
+  assert.equal(displaced.calls.length, 1);
+
+  const shut = await codexSetup();
+  shut.state.held = true;
+  mock.timers.tick(USAGE_SKIP_MS);
+  await shut.emit("agent_end", { messages: [] }, shut.ctx);
+  await flush();
+  await shut.emit("session_shutdown", { reason: "quit" }, shut.ctx);
+  const renders = shut.tui.renders;
+  shut.calls[1]!.release();
+  mock.timers.tick(USAGE_BACKSTOP_MS * 2);
+  await flush();
+  assert.equal(shut.calls.length, 2);
+  assert.equal(shut.tui.renders, renders);
 });
