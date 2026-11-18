@@ -35,6 +35,7 @@ The default `lineLayout` is `"expanded"`: one Line per Element, in `elementOrder
 |---|---|---|
 | `project` | `[model]` badge, project path, `git:(branch* ↑2 ↓1 [+120 -14])`, then session name, `pi vX`, the Extra command's label, session duration, cost and output speed | `display.showModel`, `display.showProject`, `gitStatus.enabled`, `display.showSessionName`, `display.showVersion`, `extraCommand`, `display.showDuration`, `display.showCost`, `display.showSpeed` |
 | `context` | `Context ██████░░░░ 46%`, coloured by the warning and critical thresholds. At or above the critical threshold it adds the latest reply's `(in: …, cache: …)` split | `display.showContextBar`, `display.contextValue`, `display.showTokenBreakdown` |
+| `usage` | `Usage ██░░░░ 25% (resets in 1h 30m)`: the 5h Limit window, plus `\| Weekly …` and `\| Monthly …` at or above `sevenDayThreshold`, or a Balance (`Usage ¥4.12`). Read from the External usage snapshot file | `display.showUsage`, `display.usageValue`, `display.usageBarEnabled`, `display.showResetLabel`, `display.usageCompact`, `display.usageThreshold`, `display.sevenDayThreshold`, `display.externalUsagePath` |
 | `promptCache` | `Cache ⏱ 3m 45s`: time left on the prompt cache since the last reply, yellow near the end, then `expired` | `display.showPromptCache`, `display.promptCacheTtlSeconds` |
 | `memory` | `Approx RAM ████░░ 12 GB / 16 GB (75%)`: system RAM. Expanded layout only | `display.showMemoryUsage` |
 | `environment` | `2 AGENTS.md \| 5 skills \| 3 prompts \| 1 MCPs`: what shapes the agent's context. MCPs are the distinct `mcp__<server>__*` tool namespaces | `display.showConfigCounts`, `display.environmentThreshold` |
@@ -50,7 +51,7 @@ The **Custom line** (`display.customLine`) is static text that goes at the start
 
 With `"lineLayout": "compact"`, everything goes on one session Line (model badge, context, project and git, then the other enabled Elements), with the tools Line under it. Memory isn't shown, and `elementOrder` and `mergeGroups` don't apply.
 
-`display.mergeGroups` joins Elements that sit next to each other in `elementOrder` onto one Line, separated by ` │ `, when they fit. For example, `[["context", "promptCache"]]`. `showSeparators` draws a rule above the tools Line.
+`display.mergeGroups` joins Elements that sit next to each other in `elementOrder` onto one Line, separated by ` │ `, when they fit. The default `[["context", "usage"]]` puts usage beside the context bar. `showSeparators` draws a rule above the tools Line.
 
 ## Config
 
@@ -102,6 +103,15 @@ Top level:
 | `contextWarningThreshold` | `70` | 0–100 |
 | `contextCriticalThreshold` | `85` | 0–100 |
 | `showTokenBreakdown` | `true` | boolean: `(in: …, cache: …)` at or above the critical threshold |
+| `showUsage` | `true` | boolean |
+| `usageValue` | `"percent"` | `"percent"` used, `"remaining"` |
+| `usageBarEnabled` | `true` | boolean |
+| `showResetLabel` | `true` | boolean: `resets in` before the reset time |
+| `usageCompact` | `false` | boolean: `5h: 25% (1h 30m)` |
+| `usageThreshold` | `0` | 0–100: hide usage until 5h or Weekly reaches this |
+| `sevenDayThreshold` | `80` | 0–100: show Weekly and Monthly at or above this (`0` = always) |
+| `externalUsagePath` | `""` | path of an External usage snapshot file in claude-hud's format |
+| `externalUsageFreshnessMs` | `300000` | ignore the snapshot once its `updated_at` is older than this |
 | `showPromptCache` | `false` | boolean |
 | `promptCacheTtlSeconds` | `300` | positive whole number |
 | `showMemoryUsage` | `false` | boolean |
@@ -115,7 +125,7 @@ Top level:
 | `timeFormat` | `"relative"` | `"relative"` (`3m ago`), `"absolute"` (`2026-11-14 09:30`), `"both"`; `"elapsed"` and `"elapsedAndAbsolute"` read like `"relative"` and `"both"` |
 | `showSessionTokens` | `false` | boolean |
 | `showExtensionStatuses` | `true` | boolean |
-| `mergeGroups` | `[]` | arrays of at least two Elements, e.g. `[["context", "promptCache"]]` |
+| `mergeGroups` | `[["context", "usage"]]` | arrays of at least two Elements; `[]` turns merging off |
 | `customLine` | `""` | static text (max 80 chars) |
 | `customLinePosition` | `"last"` | `"first"`, `"last"` |
 
@@ -124,6 +134,8 @@ Top level:
 | Field | Default | Colours |
 |---|---|---|
 | `context` | `"green"` | context value and bar below the warning threshold |
+| `usage` | `"brightBlue"` | usage below 75% |
+| `usageWarning` | `"brightMagenta"` | usage at 75% or more (90% and up is `critical`) |
 | `warning` | `"yellow"` | context at or above the warning threshold, cache about to expire |
 | `critical` | `"red"` | context at or above the critical threshold |
 | `model` | `"cyan"` | model badge |
@@ -195,12 +207,12 @@ Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command fa
 
 ## Differences from claude-hud
 
-- **No usage limits**: there's no 5h/7d subscription usage, and no external usage snapshots, because pi has no API for them. Every usage field (`showUsage`, `usageValue`, `usageBarEnabled`, `sevenDayThreshold`, `externalUsage*`, `colors.usage`, …) is ignored.
-- **Dropped Elements**: `addedDirs`, `usage`, `agents` and `todos` have no pi equivalent. The output style and Claude Code's mode line are gone too.
+- **Usage limits**: read from the External usage snapshot file (`externalUsagePath`) only. `externalUsageWritePath` isn't ported: it copies Claude Code's statusline data, which pi doesn't have. Usage adds a Monthly Limit window after Weekly. An absent `sevenDayThreshold` is `80`, its documented default; claude-hud's validation turns it into `0`.
+- **Dropped Elements**: `addedDirs`, `agents` and `todos` have no pi equivalent. The output style and Claude Code's mode line are gone too.
 - **Pi equivalents**: `pi vX` instead of `CC vX`; pi's thinking level instead of Claude's effort level; the Environment line counts AGENTS.md files, skills, prompt templates and MCP servers instead of CLAUDE.md, rules, MCPs and hooks.
 - **Renamed fields, no aliases**: `display.showClaudeCodeVersion` is `display.showVersion`, and `display.showEffortLevel` is `display.showThinkingLevel`.
 - **Other dropped fields**: `maxWidth` and `forceMaxWidth` (pi gives the HUD its width), `display.showAddedDirs`, `addedDirsLayout`, `showAgents`, `showTodos`, `showOutputStyle` and `autocompactBuffer`.
-- **Changed defaults**: `mergeGroups` defaults to `[]`, and `elementOrder` has no `usage`, `agents`, `todos` or `addedDirs`.
+- **Changed defaults**: `elementOrder` has no `agents`, `todos` or `addedDirs`.
 - **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config) and `display.showExtensionStatuses`.
 - **Debug log**: `DEBUG=pi-hud-plus` instead of `DEBUG=claude-hud`, written to a file instead of stderr.
 - **Commands**: `/pi-hud:setup` and `/pi-hud:configure` replace `/claude-hud:setup` and `/claude-hud:configure`. There's no statusline to install, so setup only writes config, and both use one settings list instead of a series of questions. There's no config file watching: after editing the file by hand, run `/reload`.

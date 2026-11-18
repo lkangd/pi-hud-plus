@@ -169,8 +169,24 @@ test("setup over an existing file asks first, and keeps the fields the list does
 
 test("configure with no config file runs setup's questions", async () => {
   const result = await run("pi-hud:configure", { selects: ["compact+separators", "Minimal", "en"], confirms: [true] });
-  assert.deepEqual(result.confirmed, ["Save pi-hud-plus config?\nLayout: expanded → compact+separators"]);
-  assert.deepEqual(result.file, { lineLayout: "compact", showSeparators: true });
+  // Minimal turns Usage limits off, as in claude-hud; it's on by default.
+  assert.deepEqual(result.confirmed, ["Save pi-hud-plus config?\nLayout: expanded → compact+separators\nUsage limits: on → off"]);
+  assert.deepEqual(result.file, { lineLayout: "compact", showSeparators: true, display: { showUsage: false } });
+});
+
+test("the Usage limits row toggles display.showUsage", async () => {
+  writeFileSync(configFile, "{}");
+  const result = await run("pi-hud:configure", { keys: (list) => (go(list, "Usage limits"), press(list, ENTER, ESC)), confirms: [true] });
+  assert.deepEqual(result.confirmed, ["Save pi-hud-plus config?\nUsage limits: on → off"]);
+  assert.deepEqual(result.file, { display: { showUsage: false } });
+});
+
+test("Full and Essential turn Usage limits on, Minimal off", async () => {
+  for (const [name, expected] of [["Full", true], ["Essential", true], ["Minimal", false]] as const) {
+    writeFileSync(configFile, JSON.stringify({ display: { showUsage: !expected } }));
+    const result = await run("pi-hud:setup", { selects: ["expanded", name, "en"], confirms: [true, true] });
+    assert.equal(result.file.display.showUsage, expected, name);
+  }
 });
 
 test("Esc on a setup question stops without writing", async () => {

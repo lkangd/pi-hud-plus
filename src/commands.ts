@@ -13,6 +13,7 @@ const TOGGLES: [key: keyof HudConfig["display"], label: string][] = [
   ["showProject", "Project"],
   ["showConfigCounts", "Environment line"],
   ["showTokenBreakdown", "Token breakdown"],
+  ["showUsage", "Usage limits"],
   ["showSpeed", "Output speed"],
   ["showDuration", "Session duration"],
   ["showSessionName", "Session name"],
@@ -73,8 +74,9 @@ function preset(name: string): Values {
   delete minimal.language;
   delete minimal.customLine;
   if (name === "Full") return { ...minimal, ...Object.fromEntries(TOGGLES.map(([key]) => [key, "on"])) };
-  if (name === "Essential") return { ...minimal, showTools: "on", showDuration: "on", showExtensionStatuses: "on" };
-  return minimal;
+  if (name === "Essential") return { ...minimal, showTools: "on", showUsage: "on", showDuration: "on", showExtensionStatuses: "on" };
+  // Minimal is the defaults except Usage limits, which is on by default but off in Minimal.
+  return { ...minimal, showUsage: "off" };
 }
 
 /** Only rows that changed are written, so a value the guided rows can't express (e.g. separators in expanded) survives. */
