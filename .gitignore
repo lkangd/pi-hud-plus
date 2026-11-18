@@ -27,3 +27,6 @@ npm-debug.log*
 
 # local handoff files
 docs/handoffs/
+
+# review files
+.code-review/
