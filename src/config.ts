@@ -5,6 +5,7 @@ import type { Language } from "./i18n/types.ts";
 
 export type LineLayoutType = "compact" | "expanded";
 export type ContextValueMode = "percent" | "tokens" | "remaining" | "both";
+export type UsageValueMode = "percent" | "remaining";
 export type GitBranchOverflowMode = "truncate" | "wrap";
 
 /**
@@ -17,7 +18,7 @@ export type GitBranchOverflowMode = "truncate" | "wrap";
 export type ModelFormatMode = "full" | "compact" | "short";
 export type TimeFormatMode = "relative" | "absolute" | "both" | "elapsed" | "elapsedAndAbsolute";
 export type CustomLinePosition = "first" | "last";
-export type HudElement = "project" | "context" | "promptCache" | "memory" | "environment" | "tools" | "sessionTime";
+export type HudElement = "project" | "context" | "usage" | "promptCache" | "memory" | "environment" | "tools" | "sessionTime";
 
 export type HudColorName =
   | "dim"
@@ -34,7 +35,9 @@ export type HudColorValue = HudColorName | number | string;
 
 export interface HudColorOverrides {
   context: HudColorValue;
+  usage: HudColorValue;
   warning: HudColorValue;
+  usageWarning: HudColorValue;
   critical: HudColorValue;
   model: HudColorValue;
   project: HudColorValue;
@@ -49,12 +52,15 @@ export interface HudColorOverrides {
 export const DEFAULT_ELEMENT_ORDER: HudElement[] = [
   "project",
   "context",
+  "usage",
   "promptCache",
   "memory",
   "environment",
   "tools",
   "sessionTime",
 ];
+
+export const DEFAULT_MERGE_GROUPS: HudElement[][] = [["context", "usage"]];
 
 const KNOWN_ELEMENTS = new Set<HudElement>(DEFAULT_ELEMENT_ORDER);
 
@@ -85,6 +91,11 @@ export interface HudConfig {
     showDuration: boolean;
     showSpeed: boolean;
     showTokenBreakdown: boolean;
+    showUsage: boolean;
+    usageValue: UsageValueMode;
+    usageBarEnabled: boolean;
+    showResetLabel: boolean;
+    usageCompact: boolean;
     showTools: boolean;
     toolNameMaxLength: number;
     toolsMaxVisible: number;
@@ -101,7 +112,12 @@ export interface HudConfig {
     mergeGroups: HudElement[][];
     contextWarningThreshold: number;
     contextCriticalThreshold: number;
+    usageThreshold: number;
+    sevenDayThreshold: number;
     environmentThreshold: number;
+    /** The External usage snapshot file. "" = off. */
+    externalUsagePath: string;
+    externalUsageFreshnessMs: number;
     modelFormat: ModelFormatMode;
     modelOverride: string;
     customLine: string;
@@ -137,6 +153,11 @@ export const DEFAULT_CONFIG: HudConfig = {
     showDuration: false,
     showSpeed: false,
     showTokenBreakdown: true,
+    showUsage: true,
+    usageValue: "percent",
+    usageBarEnabled: true,
+    showResetLabel: true,
+    usageCompact: false,
     showTools: false,
     toolNameMaxLength: 0,
     toolsMaxVisible: 4,
@@ -150,10 +171,14 @@ export const DEFAULT_CONFIG: HudConfig = {
     showSessionStartDate: false,
     showLastResponseAt: false,
     showExtensionStatuses: true,
-    mergeGroups: [],
+    mergeGroups: DEFAULT_MERGE_GROUPS.map((group) => [...group]),
     contextWarningThreshold: 70,
     contextCriticalThreshold: 85,
+    usageThreshold: 0,
+    sevenDayThreshold: 80,
     environmentThreshold: 0,
+    externalUsagePath: "",
+    externalUsageFreshnessMs: 300000,
     modelFormat: "full",
     modelOverride: "",
     customLine: "",
@@ -162,7 +187,9 @@ export const DEFAULT_CONFIG: HudConfig = {
   },
   colors: {
     context: "green",
+    usage: "brightBlue",
     warning: "yellow",
+    usageWarning: "brightMagenta",
     critical: "red",
     model: "cyan",
     project: "yellow",
@@ -218,9 +245,9 @@ function validateElementOrder(value: unknown): HudElement[] {
   return elementOrder.length > 0 ? elementOrder : [...DEFAULT_ELEMENT_ORDER];
 }
 
-// claude-hud falls back to its default group when nothing valid survives; our default is [] so every invalid case is [].
 function validateMergeGroups(value: unknown): HudElement[][] {
-  if (!Array.isArray(value)) return [];
+  if (!Array.isArray(value)) return DEFAULT_MERGE_GROUPS.map((group) => [...group]);
+  if (value.length === 0) return [];
 
   const usedElements = new Set<HudElement>();
   const mergeGroups: HudElement[][] = [];
@@ -236,7 +263,7 @@ function validateMergeGroups(value: unknown): HudElement[][] {
     }
   }
 
-  return mergeGroups;
+  return mergeGroups.length > 0 ? mergeGroups : DEFAULT_MERGE_GROUPS.map((group) => [...group]);
 }
 
 function validateThreshold(value: unknown, max = 100): number {
@@ -262,6 +289,11 @@ function validateDurationSeconds(value: unknown, fallback: number): number {
 function validateNonNegativeInteger(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return fallback;
   return value;
+}
+
+function validateFreshnessMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_CONFIG.display.externalUsageFreshnessMs;
+  return Math.max(0, Math.floor(value));
 }
 
 function truncatedString(value: unknown, fallback: string): string {
@@ -308,6 +340,11 @@ export function mergeConfig(userConfig: unknown): HudConfig {
       showDuration: displayBool("showDuration"),
       showSpeed: displayBool("showSpeed"),
       showTokenBreakdown: displayBool("showTokenBreakdown"),
+      showUsage: displayBool("showUsage"),
+      usageValue: oneOf(display.usageValue, ["percent", "remaining"] as const, D.display.usageValue),
+      usageBarEnabled: displayBool("usageBarEnabled"),
+      showResetLabel: displayBool("showResetLabel"),
+      usageCompact: displayBool("usageCompact"),
       showTools: displayBool("showTools"),
       toolNameMaxLength: validateNonNegativeInteger(display.toolNameMaxLength, D.display.toolNameMaxLength),
       toolsMaxVisible: validateNonNegativeInteger(display.toolsMaxVisible, D.display.toolsMaxVisible),
@@ -324,7 +361,12 @@ export function mergeConfig(userConfig: unknown): HudConfig {
       mergeGroups: validateMergeGroups(display.mergeGroups),
       contextWarningThreshold: validateContextThreshold(display.contextWarningThreshold, D.display.contextWarningThreshold),
       contextCriticalThreshold: validateContextThreshold(display.contextCriticalThreshold, D.display.contextCriticalThreshold),
+      usageThreshold: validateThreshold(display.usageThreshold, 100),
+      // claude-hud's validateThreshold turns an absent key into 0 too, against its documented default of 80.
+      sevenDayThreshold: display.sevenDayThreshold === undefined ? D.display.sevenDayThreshold : validateThreshold(display.sevenDayThreshold, 100),
       environmentThreshold: validateThreshold(display.environmentThreshold, 100),
+      externalUsagePath: typeof display.externalUsagePath === "string" ? display.externalUsagePath.trim() : "",
+      externalUsageFreshnessMs: validateFreshnessMs(display.externalUsageFreshnessMs),
       modelFormat: oneOf(display.modelFormat, ["full", "compact", "short"] as const, D.display.modelFormat),
       modelOverride: truncatedString(display.modelOverride, D.display.modelOverride),
       customLine: truncatedString(display.customLine, D.display.customLine),
@@ -337,7 +379,9 @@ export function mergeConfig(userConfig: unknown): HudConfig {
     },
     colors: {
       context: color("context"),
+      usage: color("usage"),
       warning: color("warning"),
+      usageWarning: color("usageWarning"),
       critical: color("critical"),
       model: color("model"),
       project: color("project"),

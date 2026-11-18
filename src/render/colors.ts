@@ -133,11 +133,10 @@ export function getContextColor(
   return resolveAnsi(colors?.context, GREEN);
 }
 
-/** claude-hud's quota colours; the usage overrides are gone, so only critical is configurable. */
 export function getQuotaColor(percent: number, colors?: Partial<HudColorOverrides>): string {
   if (percent >= 90) return resolveAnsi(colors?.critical, RED);
-  if (percent >= 75) return BRIGHT_MAGENTA;
-  return BRIGHT_BLUE;
+  if (percent >= 75) return resolveAnsi(colors?.usageWarning, BRIGHT_MAGENTA);
+  return resolveAnsi(colors?.usage, BRIGHT_BLUE);
 }
 
 export function quotaBar(percent: number, width: number = 10, colors?: Partial<HudColorOverrides>): string {

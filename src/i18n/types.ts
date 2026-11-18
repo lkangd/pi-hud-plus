@@ -1,6 +1,9 @@
 export type MessageKey =
   // Labels
   | "label.context"
+  | "label.usage"
+  | "label.weekly"
+  | "label.monthly"
   | "label.approxRam"
   | "label.promptCache"
   | "label.estimatedCost"
@@ -12,7 +15,10 @@ export type MessageKey =
   | "label.prompts"
   // Status
   | "status.expired"
+  | "status.limitReached"
   // Format
+  | "format.resets"
+  | "format.resetsIn"
   | "format.at"
   | "format.in"
   | "format.cache"

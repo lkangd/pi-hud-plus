@@ -1,10 +1,10 @@
-// Ported from claude-hud's tests/config.test.js, minus dropped fields (maxWidth, usage, agents, todos, ...) and legacy migration.
+// Ported from claude-hud's tests/config.test.js, minus dropped fields (maxWidth, agents, todos, externalUsageWritePath, ...) and legacy migration.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, mergeConfig, DEFAULT_CONFIG, DEFAULT_ELEMENT_ORDER } from "../src/config.ts";
+import { loadConfig, mergeConfig, DEFAULT_CONFIG, DEFAULT_ELEMENT_ORDER, DEFAULT_MERGE_GROUPS } from "../src/config.ts";
 
 test("mergeConfig({}) returns the defaults", () => {
   assert.deepEqual(mergeConfig({}), DEFAULT_CONFIG);
@@ -16,7 +16,7 @@ test("mergeConfig tolerates non-object input", () => {
 
 test("default display toggles match claude-hud's minus dropped fields", () => {
   const { display, gitStatus } = mergeConfig({});
-  for (const key of ["showModel", "showProject", "showContextBar", "showTokenBreakdown", "showExtensionStatuses"] as const) {
+  for (const key of ["showModel", "showProject", "showContextBar", "showTokenBreakdown", "showUsage", "showExtensionStatuses"] as const) {
     assert.equal(display[key], true, key);
   }
   for (const key of [
@@ -41,12 +41,63 @@ test("top-level defaults", () => {
 });
 
 test("dropped fields are not part of the config", () => {
-  const config = mergeConfig({ maxWidth: 50, forceMaxWidth: true, display: { showUsage: true, showAgents: true } }) as any;
+  const config = mergeConfig({ maxWidth: 50, forceMaxWidth: true, display: { showAgents: true, externalUsageWritePath: "/tmp/u.json" } }) as any;
   assert.equal(config.maxWidth, undefined);
   assert.equal(config.forceMaxWidth, undefined);
-  assert.equal(config.display.showUsage, undefined);
   assert.equal(config.display.showAgents, undefined);
-  assert.equal(config.colors.usage, undefined);
+  assert.equal(config.display.externalUsageWritePath, undefined);
+});
+
+test("usage defaults match claude-hud's", () => {
+  const { display, colors } = mergeConfig({});
+  assert.equal(display.showUsage, true);
+  assert.equal(display.usageValue, "percent");
+  assert.equal(display.usageBarEnabled, true);
+  assert.equal(display.showResetLabel, true);
+  assert.equal(display.usageCompact, false);
+  assert.equal(display.usageThreshold, 0);
+  assert.equal(display.sevenDayThreshold, 80);
+  assert.equal(colors.usage, "brightBlue");
+  assert.equal(colors.usageWarning, "brightMagenta");
+});
+
+test("mergeConfig preserves explicit usage toggles", () => {
+  const { display } = mergeConfig({ display: { showUsage: false, usageBarEnabled: false, showResetLabel: false, usageCompact: true } });
+  assert.deepEqual([display.showUsage, display.usageBarEnabled, display.showResetLabel, display.usageCompact], [false, false, false, true]);
+});
+
+test("mergeConfig accepts usageValue=remaining", () => {
+  assert.equal(mergeConfig({ display: { usageValue: "remaining" } }).display.usageValue, "remaining");
+});
+
+test("mergeConfig falls back to default for invalid usageValue", () => {
+  assert.equal(mergeConfig({ display: { usageValue: "tokens" } }).display.usageValue, DEFAULT_CONFIG.display.usageValue);
+});
+
+test("usage thresholds clamp to 0-100 and a non-number becomes 0, as in claude-hud", () => {
+  assert.equal(mergeConfig({ display: { usageThreshold: 150 } }).display.usageThreshold, 100);
+  assert.equal(mergeConfig({ display: { usageThreshold: -5 } }).display.usageThreshold, 0);
+  assert.equal(mergeConfig({ display: { sevenDayThreshold: 50 } }).display.sevenDayThreshold, 50);
+  assert.equal(mergeConfig({ display: { sevenDayThreshold: "80" } }).display.sevenDayThreshold, 0);
+});
+
+test("mergeConfig defaults external usage fallback settings", () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.externalUsagePath, "");
+  assert.equal(config.display.externalUsageFreshnessMs, 300000);
+});
+
+test("mergeConfig preserves valid external usage fallback settings", () => {
+  const config = mergeConfig({ display: { externalUsagePath: " /tmp/usage.json ", externalUsageFreshnessMs: 12345 } });
+  assert.equal(config.display.externalUsagePath, "/tmp/usage.json");
+  assert.equal(config.display.externalUsageFreshnessMs, 12345);
+});
+
+test("mergeConfig sanitizes invalid external usage fallback settings", () => {
+  const config = mergeConfig({ display: { externalUsagePath: 123, externalUsageFreshnessMs: -10 } });
+  assert.equal(config.display.externalUsagePath, "");
+  assert.equal(config.display.externalUsageFreshnessMs, 0);
+  assert.equal(mergeConfig({ display: { externalUsageFreshnessMs: "x" } }).display.externalUsageFreshnessMs, 300000);
 });
 
 test("unknown fields are ignored silently", () => {
@@ -231,13 +282,14 @@ test("contextValue accepts percent, tokens, remaining and both", () => {
 
 test("elementOrder defaults to the surviving Elements", () => {
   assert.deepEqual(mergeConfig({}).elementOrder, [
-    "project", "context", "promptCache", "memory", "environment", "tools", "sessionTime",
+    "project", "context", "usage", "promptCache", "memory", "environment", "tools", "sessionTime",
   ]);
   assert.deepEqual(DEFAULT_ELEMENT_ORDER, mergeConfig({}).elementOrder);
 });
 
-test("mergeGroups defaults to none", () => {
-  assert.deepEqual(mergeConfig({}).display.mergeGroups, []);
+test("mergeConfig defaults mergeGroups to context and usage", () => {
+  assert.deepEqual(mergeConfig({}).display.mergeGroups, [["context", "usage"]]);
+  assert.deepEqual(DEFAULT_CONFIG.display.mergeGroups, DEFAULT_MERGE_GROUPS);
 });
 
 test("mergeConfig preserves explicit empty mergeGroups to disable merged lines", () => {
@@ -256,16 +308,16 @@ test("mergeConfig accepts valid mergeGroups and filters invalid entries", () => 
     },
   });
   assert.deepEqual(config.display.mergeGroups, [
-    ["project", "context"],
+    ["project", "context", "usage"],
     ["tools", "sessionTime"],
     ["environment", "promptCache"],
   ]);
 });
 
 test("mergeConfig falls back to default mergeGroups when value is invalid", () => {
-  assert.deepEqual(mergeConfig({ display: { mergeGroups: "context,usage" } }).display.mergeGroups, []);
-  assert.deepEqual(mergeConfig({ display: { mergeGroups: [["context"], ["unknown"]] } }).display.mergeGroups, []);
-  assert.deepEqual(mergeConfig({ display: { mergeGroups: [null] } }).display.mergeGroups, []);
+  assert.deepEqual(mergeConfig({ display: { mergeGroups: "context,usage" } }).display.mergeGroups, DEFAULT_MERGE_GROUPS);
+  assert.deepEqual(mergeConfig({ display: { mergeGroups: [["context"], ["unknown"]] } }).display.mergeGroups, DEFAULT_MERGE_GROUPS);
+  assert.deepEqual(mergeConfig({ display: { mergeGroups: [null] } }).display.mergeGroups, DEFAULT_MERGE_GROUPS);
 });
 
 test("mergeConfig preserves valid custom elementOrder", () => {
@@ -277,7 +329,7 @@ test("mergeConfig filters unknown and dropped entries and de-duplicates elementO
   const config = mergeConfig({
     elementOrder: ["project", "agents", "project", "banana", "usage", "memory", "tools", "context"],
   });
-  assert.deepEqual(config.elementOrder, ["project", "memory", "tools", "context"]);
+  assert.deepEqual(config.elementOrder, ["project", "usage", "memory", "tools", "context"]);
 });
 
 test("mergeConfig falls back to default when elementOrder is empty or invalid", () => {
@@ -289,7 +341,9 @@ test("mergeConfig falls back to default when elementOrder is empty or invalid", 
 test("mergeConfig defaults colors to expected semantic palette", () => {
   assert.deepEqual(mergeConfig({}).colors, {
     context: "green",
+    usage: "brightBlue",
     warning: "yellow",
+    usageWarning: "brightMagenta",
     critical: "red",
     model: "cyan",
     project: "yellow",
@@ -306,7 +360,9 @@ test("mergeConfig accepts valid color overrides and filters invalid values", () 
   const config = mergeConfig({
     colors: {
       context: "cyan",
+      usage: "magenta",
       warning: "brightBlue",
+      usageWarning: "yellow",
       critical: "not-a-color",
       model: 214,
       project: "#33ff00",
@@ -317,7 +373,9 @@ test("mergeConfig accepts valid color overrides and filters invalid values", () 
     },
   });
   assert.equal(config.colors.context, "cyan");
+  assert.equal(config.colors.usage, "magenta");
   assert.equal(config.colors.warning, "brightBlue");
+  assert.equal(config.colors.usageWarning, "yellow");
   assert.equal(config.colors.critical, DEFAULT_CONFIG.colors.critical);
   assert.equal(config.colors.model, 214);
   assert.equal(config.colors.project, "#33ff00");

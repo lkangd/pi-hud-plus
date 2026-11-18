@@ -13,12 +13,14 @@ import { renderSessionTimeLine } from "./lines/session-time.ts";
 import { renderSessionTokensLine } from "./lines/session-stats.ts";
 import { renderSessionLine } from "./session-line.ts";
 import { renderToolsLine } from "./tools-line.ts";
+import { renderUsageLine } from "./lines/usage.ts";
 
 
 /** One Line module per Element. */
 const ELEMENT_RENDERERS: Record<HudElement, (ctx: RenderContext) => string | null> = {
   project: renderProjectLine,
   context: renderContextLine,
+  usage: renderUsageLine,
   promptCache: renderPromptCacheLine,
   memory: renderMemoryLine,
   environment: renderEnvironmentLine,

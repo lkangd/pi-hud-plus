@@ -50,6 +50,20 @@ export interface HudSnapshot {
   memory?: MemoryInfo | null;
   /** What shapes the agent's context. Absent: config counts off. */
   environment?: HudEnvironment;
+  /** The current vendor's Usage limit or Balance. Absent or null: none, off, or not read yet. */
+  usageLimit?: UsageLimit | null;
+}
+
+/** claude-hud's UsageData plus the monthly Limit window. Percents are 0-100; null = the vendor reports no such window. */
+export interface UsageLimit {
+  fiveHour: number | null;
+  sevenDay: number | null;
+  monthly: number | null;
+  fiveHourResetAt: Date | null;
+  sevenDayResetAt: Date | null;
+  monthlyResetAt: Date | null;
+  /** A Balance (e.g. "¥4.12"), shown instead of the Limit windows. */
+  balanceLabel?: string | null;
 }
 
 export interface HudEnvironment {
