@@ -1,6 +1,7 @@
 // Ported from claude-hud's speed-tracker. pi streams to one process, so the previous sample lives in memory, not a cache file.
 
-const SPEED_WINDOW_MS = 2000;
+/** A reading older than this is stale. */
+export const SPEED_WINDOW_MS = 2000;
 // Updates can arrive many times per second while tokens stream. Computing a rate from
 // sub-500ms windows amplifies noise and produces spurious multi-thousand tok/s readings,
 // so require at least half a second of elapsed time before reporting a speed.

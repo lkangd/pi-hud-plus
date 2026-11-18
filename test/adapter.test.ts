@@ -389,6 +389,25 @@ test("speed comes from the streaming reply's output tokens", async () => {
   assert.deepEqual(footer()!.render(80).map(strip), ["out: 100.0 tok/s"]);
 });
 
+test("speed hides when the reply stalls past the speed window", async () => {
+  mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1000 });
+  const { emit } = fakePi();
+  const model = { name: "Claude", provider: "anthropic", id: "c" };
+  const { ctx, footer } = fakeCtx({ cwd: projectWith({ showSpeed: true, showModel: false, showProject: false }), model });
+  await emit("session_start", { reason: "startup" }, ctx);
+  const streamed = (output: number) => ({ message: { role: "assistant", usage: usage(0, output, 0, 0, 0) } });
+  await emit("message_update", streamed(10), ctx);
+  mock.timers.tick(500);
+  await emit("message_update", streamed(60), ctx);
+  mock.timers.tick(1500);
+  await emit("message_update", streamed(210), ctx);
+  // A fresh reading restarts the window.
+  mock.timers.tick(1999);
+  assert.deepEqual(footer()!.render(80).map(strip), ["out: 100.0 tok/s"]);
+  mock.timers.tick(1);
+  assert.deepEqual(footer()!.render(80), []);
+});
+
 test("speed hides once the reply stops streaming, like claude-hud with no fresh reading", async () => {
   mock.timers.enable({ apis: ["Date"], now: 1000 });
   const { emit } = fakePi();

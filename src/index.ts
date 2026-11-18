@@ -19,7 +19,7 @@ import { getGitStatus } from "./git.ts";
 import { getMemoryUsage } from "./memory.ts";
 import { renderHud } from "./render/index.ts";
 import { createSessionReader } from "./session.ts";
-import { createSpeedTracker } from "./speed-tracker.ts";
+import { createSpeedTracker, SPEED_WINDOW_MS } from "./speed-tracker.ts";
 import type { HudContext, HudEnvironment, HudSnapshot, HudTool } from "./types.ts";
 
 interface Session {
@@ -31,6 +31,8 @@ interface Session {
   displacedNotice?: ReturnType<typeof setTimeout>;
   stopClock?: () => void;
   trackSpeed: ReturnType<typeof createSpeedTracker>;
+  /** Hides the speed once its reading is stale. */
+  speedExpiry?: ReturnType<typeof setTimeout>;
   git?: BackgroundJob;
   extra?: BackgroundJob;
   footerData?: ReadonlyFooterDataProvider;
@@ -278,13 +280,19 @@ export default function piHud(pi: ExtensionAPI): void {
   // Session data: after these events the session's entries or name may have changed.
   const refreshSession = (ctx: ExtensionContext) => update(generation, { session: readSession(pi, ctx), now: Date.now() });
 
-  // Speed: sampled from the streaming reply. Most updates come too close together for a reading; keep showing the last one.
+  // Speed: sampled from the streaming reply. Most updates come too close together for a reading; keep showing the last one
+  // until it's stale, as claude-hud hides the speed once a reply stalls past the window.
   const sampleSpeed = (s: Session, usage: Usage) => {
     const speed = s.trackSpeed(usage.output, Date.now());
-    if (speed !== null) update(generation, { speed });
+    if (speed === null) return;
+    update(generation, { speed });
+    clearTimeout(s.speedExpiry);
+    s.speedExpiry = setTimeout(() => live() === s && clearSpeed(s), SPEED_WINDOW_MS);
+    s.speedExpiry.unref?.();
   };
   // The reply stopped streaming: no fresh reading, so claude-hud would hide the speed.
   const clearSpeed = (s: Session) => {
+    clearTimeout(s.speedExpiry);
     if (s.snapshot.speed !== undefined) update(generation, { speed: undefined });
   };
 
@@ -407,8 +415,9 @@ export default function piHud(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", (_event, ctx) => {
     if (!session) return;
-    const { displaced, displacedNotice, stopClock } = session;
+    const { displaced, displacedNotice, speedExpiry, stopClock } = session;
     clearTimeout(displacedNotice);
+    clearTimeout(speedExpiry);
     stopClock?.();
     session.git?.stop();
     session.extra?.stop();
