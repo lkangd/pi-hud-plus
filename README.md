@@ -18,6 +18,15 @@ pi -e npm:pi-hud-plus
 
 The HUD runs only in pi's interactive TUI. Print, JSON and RPC modes are left alone.
 
+## Commands
+
+- `/pi-hud:setup` asks for a layout, a Preset (Full, Essential or Minimal) and a language, then opens a settings list pre-filled from the Preset.
+- `/pi-hud:configure` opens the same list on your current config. With no config file yet, it runs setup's questions first.
+
+In the list, Enter or Space changes a row. The rows are layout, language, git style (`off`, `branch`, `branch+dirty`, `full`, `file stats`), one on/off row per Element, the Custom line, and Reset to preset. Press Esc when you're done: you'll see the changes and confirm before anything is saved. pi-hud-plus then writes `~/.pi/agent/pi-hud-plus.json` and reloads.
+
+Only the rows you changed are written. Every other field in the file is kept, including colors, thresholds and `extraCommand`. If the file isn't valid JSON, the commands refuse to touch it.
+
 ## Lines and Elements
 
 The default `lineLayout` is `"expanded"`: one Line per Element, in `elementOrder`. Lines with nothing to show are left out. Every Line is cut to the terminal width with `…`.
@@ -45,14 +54,9 @@ With `"lineLayout": "compact"`, everything goes on one session Line (model badge
 
 ## Config
 
-pi-hud-plus reads two JSON files:
+pi-hud-plus reads one JSON file, `~/.pi/agent/pi-hud-plus.json`, for every project. There's no per-project file. The file is optional. A file that is missing or doesn't parse counts as empty, so the HUD still renders. Each field is validated on its own: an invalid value falls back to that field's default, and unknown fields are ignored.
 
-- global: `~/.pi/agent/pi-hud-plus.json`
-- project: `<cwd>/.pi/pi-hud-plus.json`
-
-The project file is deep-merged over the global one. Objects merge key by key, while arrays and plain values replace. Both files are optional. A file that is missing or doesn't parse counts as empty, so the HUD still renders. Each field is validated on its own: an invalid value falls back to that field's default, and unknown fields are ignored.
-
-The files are read when a session starts. After editing one, run `/reload`.
+The file is read when a session starts. After editing it, run `/reload`.
 
 ### Field reference
 
@@ -65,7 +69,7 @@ Top level:
 | `showSeparators` | `false` | boolean |
 | `pathLevels` | `1` | `1`, `2`, `3`: how many trailing directories of the cwd to show |
 | `elementOrder` | `["project", "context", "promptCache", "memory", "environment", "tools", "sessionTime"]` | Elements in Line order. Leaving an Element out hides its Line. Unknown ids and duplicates are dropped |
-| `extraCommand` | `""` (off) | shell command, see [Extra command](#extra-command). Global file only |
+| `extraCommand` | `""` (off) | shell command, see [Extra command](#extra-command) |
 
 `gitStatus`:
 
@@ -171,8 +175,6 @@ Then run `/reload`.
 
 It runs when a session starts, after each agent run, and every 30 seconds. Each run has a 3-second timeout. Control and escape characters are stripped from the label, and it is cut to 50 characters. If the command fails, times out or prints anything else, no label is shown.
 
-`extraCommand` is **ignored in the project file**. It runs a shell command, and a project file comes with whatever repository you open. Reading it from there would let a cloned repo run commands on your machine just by being opened. Set it in `~/.pi/agent/pi-hud-plus.json`.
-
 ## Coexisting with other footer extensions
 
 pi has one footer, and the last extension to set it wins. Other extensions' footer statuses aren't lost: they show on the HUD's Extension statuses Line.
@@ -195,8 +197,8 @@ To see the HUD, disable the other footer extension with `pi config`, then start 
 - **Renamed fields, no aliases**: `display.showClaudeCodeVersion` is `display.showVersion`, and `display.showEffortLevel` is `display.showThinkingLevel`.
 - **Other dropped fields**: `maxWidth` and `forceMaxWidth` (pi gives the HUD its width), `display.showAddedDirs`, `addedDirsLayout`, `showAgents`, `showTodos`, `showOutputStyle` and `autocompactBuffer`.
 - **Changed defaults**: `mergeGroups` defaults to `[]`, and `elementOrder` has no `usage`, `agents`, `todos` or `addedDirs`.
-- **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config, and never read from the project file) and `display.showExtensionStatuses`.
-- **No setup command**: you configure the HUD by editing the JSON files. There's no `/claude-hud:setup`-style command, and no config file watching.
+- **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config) and `display.showExtensionStatuses`.
+- **Commands**: `/pi-hud:setup` and `/pi-hud:configure` replace `/claude-hud:setup` and `/claude-hud:configure`. There's no statusline to install, so setup only writes config, and both use one settings list instead of a series of questions. There's no config file watching: after editing the file by hand, run `/reload`.
 - **No git files Line**: with `showFileStats` on, claude-hud adds a Line listing the changed files; pi-hud-plus shows only the counts in the git Element.
 - **No branch link**: claude-hud links the branch name to its remote (`branchUrl`) with a terminal hyperlink; pi-hud-plus shows plain text.
 - **`max` thinking level**: pi's `max` level, which claude-hud has no equivalent for, shows as `◕` like `xhigh`.

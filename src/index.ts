@@ -12,6 +12,7 @@ import {
   type ToolExecutionStartEvent,
 } from "@earendil-works/pi-coding-agent";
 import { hasTickingElement, startClock } from "./clock.ts";
+import { registerCommands } from "./commands.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
 import { runExtraCmd } from "./extra-cmd.ts";
 import { getGitStatus } from "./git.ts";
@@ -107,6 +108,7 @@ const DISPLACED_NOTICE =
 
 /** Pi adapter: owns the footer and keeps the cached HUD snapshot up to date. */
 export default function piHud(pi: ExtensionAPI): void {
+  registerCommands(pi);
   // Bumped on every session start/shutdown. Async work captures it and checks isLive(gen) before touching anything.
   let generation = 0;
   let session: Session | undefined;
@@ -215,7 +217,7 @@ export default function piHud(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     if (!ctx.hasUI || ctx.mode !== "tui") return;
-    const config = loadConfig(ctx.cwd, getAgentDir());
+    const config = loadConfig(getAgentDir());
     const breakdown = lastBreakdown(ctx.sessionManager.getEntries());
     const current: Session = (session = {
       generation: ++generation,

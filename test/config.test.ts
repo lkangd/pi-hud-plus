@@ -387,7 +387,7 @@ test("mergeConfig independently validates barFilled and barEmpty", () => {
   assert.equal(config.colors.barEmpty, DEFAULT_CONFIG.colors.barEmpty);
 });
 
-// --- loadConfig: global <agentDir>/pi-hud-plus.json, project <cwd>/.pi/pi-hud-plus.json ---
+// --- loadConfig: only the global <agentDir>/pi-hud-plus.json ---
 
 function configDirs(global?: unknown, project?: unknown) {
   const root = mkdtempSync(join(tmpdir(), "pi-hud-config-"));
@@ -404,41 +404,26 @@ function configDirs(global?: unknown, project?: unknown) {
 
 test("loadConfig with no files returns the defaults", () => {
   const { cwd, agentDir } = configDirs();
-  assert.deepEqual(loadConfig(cwd, agentDir), DEFAULT_CONFIG);
+  assert.deepEqual(loadConfig(agentDir), DEFAULT_CONFIG);
 });
 
 test("loadConfig reads the global file", () => {
   const { cwd, agentDir } = configDirs({ lineLayout: "compact", display: { showSpeed: true } });
-  const config = loadConfig(cwd, agentDir);
+  const config = loadConfig(agentDir);
   assert.equal(config.lineLayout, "compact");
   assert.equal(config.display.showSpeed, true);
 });
 
-test("the project file is deep-merged over the global one: objects merge, arrays replace", () => {
-  const { cwd, agentDir } = configDirs(
-    { pathLevels: 2, elementOrder: ["project", "context", "tools"], display: { showModel: false, showCost: true } },
-    { elementOrder: ["tools"], display: { showCost: false, showSpeed: true } },
-  );
-  const config = loadConfig(cwd, agentDir);
-  assert.equal(config.pathLevels, 2);
-  assert.deepEqual(config.elementOrder, ["tools"]);
-  assert.equal(config.display.showModel, false);
-  assert.equal(config.display.showCost, false);
-  assert.equal(config.display.showSpeed, true);
-});
-
-test("extraCommand is ignored in the project file", () => {
-  const projectOnly = configDirs(undefined, { extraCommand: "rm -rf ~" });
-  assert.equal(loadConfig(projectOnly.cwd, projectOnly.agentDir).extraCommand, "");
-  const both = configDirs({ extraCommand: "date" }, { extraCommand: "rm -rf ~" });
-  assert.equal(loadConfig(both.cwd, both.agentDir).extraCommand, "date");
+test("a project file is ignored, including its extraCommand", () => {
+  const { cwd, agentDir } = configDirs({ extraCommand: "date" }, { extraCommand: "rm -rf ~", display: { showSpeed: true } });
+  const config = loadConfig(agentDir);
+  assert.equal(config.extraCommand, "date");
+  assert.equal(config.display.showSpeed, false);
 });
 
 test("a file that does not parse is treated as empty", () => {
-  const broken = configDirs("{ not json", { display: { showModel: false } });
-  assert.equal(loadConfig(broken.cwd, broken.agentDir).display.showModel, false);
-  const brokenProject = configDirs({ lineLayout: "compact" }, "[1, 2");
-  assert.equal(loadConfig(brokenProject.cwd, brokenProject.agentDir).lineLayout, "compact");
-  const notObject = configDirs([1, 2], 5);
-  assert.deepEqual(loadConfig(notObject.cwd, notObject.agentDir), DEFAULT_CONFIG);
+  const broken = configDirs("{ not json");
+  assert.deepEqual(loadConfig(broken.agentDir), DEFAULT_CONFIG);
+  const notObject = configDirs([1, 2]);
+  assert.deepEqual(loadConfig(notObject.agentDir), DEFAULT_CONFIG);
 });

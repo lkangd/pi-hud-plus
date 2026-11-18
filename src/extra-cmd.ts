@@ -24,8 +24,8 @@ export function sanitize(input: string): string {
  * Run the Extra command and parse its JSON output, expecting { label: string }.
  * Returns null on any error (timeout, non-zero exit, parse failure, missing label).
  *
- * SECURITY NOTE: cmd comes only from the user's global config; a project file's extraCommand is
- * stripped before merging, so opening a repo can't run commands.
+ * SECURITY NOTE: cmd comes only from the user's global config; project config files aren't read
+ * (see loadConfig), so opening a repo can't run commands.
  */
 export async function runExtraCmd(exec: Exec, cmd: string, timeout: number = TIMEOUT_MS): Promise<string | null> {
   try {

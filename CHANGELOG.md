@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- **`/pi-hud:setup` and `/pi-hud:configure`**: guided config in a settings list (layout, language, git style, Elements, Custom line, Presets). Changes are confirmed, written to `~/.pi/agent/pi-hud-plus.json` and reloaded.
+
+### Breaking Changes
+
+- **Global config only**: `.pi/pi-hud-plus.json` in a project is no longer read. Move its fields into `~/.pi/agent/pi-hud-plus.json`.
+
 ## [0.1.0] - 2026-11-14
 
 ### New Features

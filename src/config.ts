@@ -63,7 +63,7 @@ export interface HudConfig {
   showSeparators: boolean;
   pathLevels: 1 | 2 | 3;
   elementOrder: HudElement[];
-  /** Shell command whose output is shown as an Extra command Line. "" = off. Ignored in the project file. */
+  /** Shell command whose output is shown as an Extra command Line. "" = off. */
   extraCommand: string;
   gitStatus: {
     enabled: boolean;
@@ -174,9 +174,9 @@ export const DEFAULT_CONFIG: HudConfig = {
   },
 };
 
-type Raw = Record<string, unknown>;
+export type Raw = Record<string, unknown>;
 
-function isObject(value: unknown): value is Raw {
+export function isObject(value: unknown): value is Raw {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -351,7 +351,7 @@ export function mergeConfig(userConfig: unknown): HudConfig {
 }
 
 /** Objects merge recursively; arrays and scalars from `override` replace. */
-function deepMerge(base: Raw, override: Raw): Raw {
+export function deepMerge(base: Raw, override: Raw): Raw {
   const merged: Raw = { ...base };
   for (const [key, value] of Object.entries(override)) {
     const current = merged[key];
@@ -370,10 +370,7 @@ function readJsonObject(file: string): Raw {
   }
 }
 
-/** Reads `<agentDir>/pi-hud-plus.json`, then deep-merges `<cwd>/.pi/pi-hud-plus.json` over it. */
-export function loadConfig(cwd: string, agentDir: string): HudConfig {
-  const global = readJsonObject(path.join(agentDir, "pi-hud-plus.json"));
-  // A cloned repo must not run shell commands just by being opened.
-  const { extraCommand: _ignored, ...project } = readJsonObject(path.join(cwd, ".pi", "pi-hud-plus.json"));
-  return mergeConfig(deepMerge(global, project));
+/** Reads `<agentDir>/pi-hud-plus.json`, the only config file (see docs/adr/0001-global-config-only.md). */
+export function loadConfig(agentDir: string): HudConfig {
+  return mergeConfig(readJsonObject(path.join(agentDir, "pi-hud-plus.json")));
 }

@@ -23,7 +23,7 @@ export function renderModelBadge({ snapshot, config }: RenderContext): string | 
   const level = snapshot.thinkingLevel;
   const symbol = level && THINKING_SYMBOLS[level];
   if (config.display.showThinkingLevel && symbol) badge += ` ${symbol} ${level}`;
-  // modelOverride can come from an untrusted project config.
+  // The model name comes from pi's model registry, which may hold user-defined models.
   return modelColor(`[${sanitize(badge)}]`, config.colors);
 }
 
