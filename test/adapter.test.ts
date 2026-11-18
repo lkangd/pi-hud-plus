@@ -1031,11 +1031,11 @@ const USAGE_SKIP_MS = 60_000;
 const USAGE_BACKSTOP_MS = 5 * 60_000;
 
 /** A Codex session with a faked fetch (`reply` is what it answers; while held, calls stay pending) and model registry. */
-async function codexSetup(opts: { display?: object; auth?: object; model?: object } = {}) {
+async function codexSetup(opts: { display?: object; auth?: object; model?: object; body?: unknown } = {}) {
   mock.timers.reset();
   mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: Date.UTC(2026, 10, 18, 12) });
   const cwd = projectWith({ showModel: false, showProject: false, usageBarEnabled: false, showResetLabel: false, ...opts.display });
-  const state = { reply: { body: wham(21) as unknown, status: 200 }, held: false };
+  const state = { reply: { body: opts.body ?? (wham(21) as unknown), status: 200 }, held: false };
   const calls: { url: string; init: RequestInit; release(): void }[] = [];
   mock.method(globalThis, "fetch", (url: string, init: RequestInit) =>
     new Promise((resolve) => {
@@ -1106,13 +1106,37 @@ test("at most one fetch is in flight", async () => {
   assert.equal(calls.length, 2);
 });
 
-test("a failed fetch, or no credentials, hides the Usage limit", async () => {
-  const { emit, ctx, state, shown } = await codexSetup();
+test("a fetch that started before a codex.rate_limits frame neither overwrites nor wipes the frame's data", async () => {
+  for (const reply of [{ body: wham(21), status: 200 }, { body: { error: "down" }, status: 500 }]) {
+    const { emit, ctx, calls, state, shown } = await codexSetup();
+    state.held = true;
+    state.reply = reply;
+    mock.timers.tick(USAGE_SKIP_MS);
+    await emit("agent_end", { messages: [] }, ctx);
+    await flush();
+    await emit("provider_stream_event", frame(30, 64), ctx);
+    calls[1]!.release();
+    await flush();
+    assert.deepEqual(shown(), ["Usage 5h 64%"], String(reply.status));
+  }
+});
+
+test("a failed fetch, or no credentials, hides the Usage limit; a failed attempt isn't retried for 60s", async () => {
+  const { emit, ctx, calls, state, shown } = await codexSetup();
   state.reply = { body: { error: "unauthorized" }, status: 401 };
   mock.timers.tick(USAGE_SKIP_MS);
   await emit("agent_end", { messages: [] }, ctx);
   await flush();
   assert.deepEqual(shown(), []);
+
+  mock.timers.tick(USAGE_SKIP_MS - 1);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(calls.length, 2, "a failed attempt also waits 60s");
+  mock.timers.tick(1);
+  await emit("agent_end", { messages: [] }, ctx);
+  await flush();
+  assert.equal(calls.length, 3);
 
   for (const auth of [{ ok: false, error: "no auth" }, { ok: true }]) {
     const none = await codexSetup({ auth });
@@ -1137,6 +1161,24 @@ test("switching to another vendor clears the shown data, and an in-flight result
   assert.deepEqual(shown(), []);
 });
 
+test("a GLM model on another host is another account: its data clears and it fetches at once", async () => {
+  const glm = (host: string, id = "glm-5") => ({ name: "GLM-5", provider: "zai", id, api: "openai-completions", baseUrl: `https://${host}/api/anthropic`, contextWindow: 200_000 });
+  const quota = { data: { limits: [{ type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 7 }] } };
+  const { emit, ctx, calls, state, shown } = await codexSetup({ model: glm("open.bigmodel.cn"), body: quota });
+  assert.deepEqual(shown(), ["Usage 5h 7%"]);
+  await emit("model_select", { model: glm("open.bigmodel.cn", "glm-4.7"), source: "set" }, ctx);
+  await flush();
+  assert.equal(calls.length, 1, "same host, same account: the data stays fresh");
+  assert.deepEqual(shown(), ["Usage 5h 7%"]);
+
+  state.held = true;
+  await emit("model_select", { model: glm("api.z.ai"), source: "set" }, ctx);
+  await flush();
+  assert.deepEqual(shown(), []);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.url, "https://api.z.ai/api/monitor/usage/quota/limit");
+});
+
 test("native data beats the External usage snapshot, which shows for other vendors", async () => {
   const file = join(mkdtempSync(join(tmpdir(), "pi-hud-usage-")), "usage.json");
   writeFileSync(file, JSON.stringify({ updated_at: Date.UTC(2026, 10, 18, 12), five_hour: { used_percentage: 42 } }));
@@ -1146,8 +1188,10 @@ test("native data beats the External usage snapshot, which shows for other vendo
   assert.deepEqual(shown(), ["Usage 5h 42%"]);
 });
 
-test("the clock runs only while a Usage limit is shown", async () => {
-  const { emit, ctx, tui, shown } = await codexSetup();
+test("the clock runs only while a Limit window with a reset time is shown", async () => {
+  const resetAt = Date.UTC(2026, 10, 20) / 1000;
+  const body = { rate_limit: { primary_window: { used_percent: 21, limit_window_seconds: 604800, reset_at: resetAt } } };
+  const { emit, ctx, tui, state, shown } = await codexSetup({ body });
   let renders = tui.renders;
   mock.timers.tick(1000);
   assert.equal(tui.renders, renders + 1, "a native reset needs the clock");
@@ -1156,6 +1200,20 @@ test("the clock runs only while a Usage limit is shown", async () => {
   renders = tui.renders;
   mock.timers.tick(5000);
   assert.equal(tui.renders, renders, "no data, no clock");
+
+  state.reply.body = { balance_infos: [{ currency: "CNY", total_balance: "4.12" }] };
+  await emit("model_select", { model: { ...OTHER, api: "openai-completions", baseUrl: "https://api.deepseek.com" }, source: "set" }, ctx);
+  await flush();
+  assert.deepEqual(shown(), ["Usage ¥4.12"]);
+  renders = tui.renders;
+  mock.timers.tick(5000);
+  assert.equal(tui.renders, renders, "a Balance has no countdown");
+
+  const noReset = await codexSetup();
+  assert.deepEqual(noReset.shown(), ["Usage Weekly 21%"]);
+  renders = noReset.tui.renders;
+  mock.timers.tick(5000);
+  assert.equal(noReset.tui.renders, renders, "a window without a reset time has no countdown");
 });
 
 test("with showUsage off nothing is fetched and frames are ignored", async () => {

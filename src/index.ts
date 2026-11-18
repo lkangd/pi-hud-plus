@@ -244,8 +244,9 @@ export default function piHud(pi: ExtensionAPI): void {
   ): UsageJob => {
     let vendor = detectVendor(model);
     let native: UsageLimit | null = null;
-    let nativeAt = -Infinity;
-    // Bumped on a vendor switch: the old vendor's in-flight fetch is then ignored and doesn't block the new one.
+    // The last fetch attempt (success or failure) or frame: a vendor that's down gets at most one request per USAGE_SKIP_MS.
+    let freshAt = -Infinity;
+    // Bumped on a vendor switch or a frame: an in-flight fetch is then ignored (it predates the data) and doesn't block a new one.
     let epoch = 0;
     let inFlight: number | undefined;
 
@@ -257,15 +258,14 @@ export default function piHud(pi: ExtensionAPI): void {
     };
     const setNative = (usage: UsageLimit | null) => {
       native = usage;
-      // A failure isn't fresh data: the next trigger retries.
-      nativeAt = usage ? Date.now() : -Infinity;
       show();
     };
 
     const run = async () => {
       show();
-      if (!isLive(gen) || !vendor || !model || inFlight === epoch || Date.now() - nativeAt < USAGE_SKIP_MS) return;
+      if (!isLive(gen) || !vendor || !model || inFlight === epoch || Date.now() - freshAt < USAGE_SKIP_MS) return;
       const mine = (inFlight = epoch);
+      freshAt = Date.now();
       const [current, forModel] = [vendor, model];
       const usage = await registry
         .getApiKeyAndHeaders(forModel)
@@ -283,19 +283,24 @@ export default function piHud(pi: ExtensionAPI): void {
       stop: () => clearInterval(backstop),
       show,
       selectModel(next) {
-        model = next;
         const nextVendor = detectVendor(next);
-        if (nextVendor !== vendor) {
+        // Another baseUrl host is another account (GLM's open.bigmodel.cn vs api.z.ai), so its data is another's too.
+        const switched = nextVendor !== vendor || URL.parse(next.baseUrl)?.hostname !== URL.parse(model?.baseUrl ?? "")?.hostname;
+        model = next;
+        if (switched) {
           vendor = nextVendor;
           epoch++;
           native = null;
-          nativeAt = -Infinity;
+          freshAt = -Infinity;
         }
         void run();
       },
       frame(data) {
         const usage = vendor === codex ? parseCodexRateLimits(data) : null;
-        if (usage && isLive(gen)) setNative(usage);
+        if (!usage || !isLive(gen)) return;
+        epoch++;
+        freshAt = Date.now();
+        setNative(usage);
       },
     };
   };
@@ -331,9 +336,11 @@ export default function piHud(pi: ExtensionAPI): void {
       // Memory is sampled here, never in render; the first reading lands on the first tick.
       if (config.display.showMemoryUsage) void getMemoryUsage().then((memory) => update(current.generation, { memory }));
     };
-    // A shown Usage limit's reset countdown ticks too; with none (and no other ticking Element) there's no clock.
+    // A shown Limit window's reset countdown ticks too; a Balance hides the windows, so it doesn't.
     const syncClock = () => {
-      const wanted = hasTickingElement(config) || !!current.snapshot.usageLimit;
+      const u = current.snapshot.usageLimit;
+      const counting = !!u && !u.balanceLabel && !!(u.fiveHourResetAt || u.sevenDayResetAt || u.monthlyResetAt);
+      const wanted = hasTickingElement(config) || counting;
       if (!isLive(current.generation) || wanted === !!current.stopClock) return;
       if (wanted) current.stopClock = startClock(tick);
       else {

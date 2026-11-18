@@ -1,6 +1,7 @@
 import type { HudConfig } from "./config.ts";
 
 /** Whether any enabled Element changes with time alone, so the HUD needs the clock. Add new ticking Elements here. */
+// A native Usage limit's reset countdown depends on the data, not the config: that rule lives in syncClock (index.ts).
 export function hasTickingElement({ display }: HudConfig): boolean {
   const relativeTimes = display.timeFormat !== "absolute" && (display.showSessionStartDate || display.showLastResponseAt);
   // Usage: reset countdowns, and the External usage snapshot is re-read each tick for freshness.
