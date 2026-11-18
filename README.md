@@ -173,7 +173,7 @@ Then run `/reload`.
 { "extraCommand": "echo '{\"label\": \"on-call: alice\"}'" }
 ```
 
-It runs when a session starts, after each agent run, and every 30 seconds. Each run has a 3-second timeout. Control and escape characters are stripped from the label, and it is cut to 50 characters. If the command fails, times out or prints anything else, no label is shown.
+It runs when a session starts, after each agent run, and every 30 seconds. Each run has a 3-second timeout. Control and escape characters are stripped from the label, and it is cut to 50 characters. If the command fails, times out or prints anything else, no label is shown. To see why, use [debug logging](#debug-logging).
 
 ## Coexisting with other footer extensions
 
@@ -184,6 +184,10 @@ If another footer extension (for example pi-powerbar) takes the footer, pi-hud-p
 > pi-hud-plus: another extension took over pi's footer, so the HUD is hidden. Disable that extension (e.g. pi-powerbar, via `pi config`) to see the HUD.
 
 To see the HUD, disable the other footer extension with `pi config`, then start a new session or run `/reload`.
+
+## Debug logging
+
+Start pi with `DEBUG=pi-hud-plus` (or `DEBUG=*`) to log why the Extra command failed or why the config file was ignored. Lines go to `~/.pi/agent/pi-hud-plus-debug.log`, not the terminal, because pi owns it.
 
 ## Language
 
@@ -198,6 +202,7 @@ To see the HUD, disable the other footer extension with `pi config`, then start 
 - **Other dropped fields**: `maxWidth` and `forceMaxWidth` (pi gives the HUD its width), `display.showAddedDirs`, `addedDirsLayout`, `showAgents`, `showTodos`, `showOutputStyle` and `autocompactBuffer`.
 - **Changed defaults**: `mergeGroups` defaults to `[]`, and `elementOrder` has no `usage`, `agents`, `todos` or `addedDirs`.
 - **New fields**: `extraCommand` (claude-hud's `--extra-cmd`, now config) and `display.showExtensionStatuses`.
+- **Debug log**: `DEBUG=pi-hud-plus` instead of `DEBUG=claude-hud`, written to a file instead of stderr.
 - **Commands**: `/pi-hud:setup` and `/pi-hud:configure` replace `/claude-hud:setup` and `/claude-hud:configure`. There's no statusline to install, so setup only writes config, and both use one settings list instead of a series of questions. There's no config file watching: after editing the file by hand, run `/reload`.
 - **No git files Line**: with `showFileStats` on, claude-hud adds a Line listing the changed files; pi-hud-plus shows only the counts in the git Element.
 - **No branch link**: claude-hud links the branch name to its remote (`branchUrl`) with a terminal hyperlink; pi-hud-plus shows plain text.

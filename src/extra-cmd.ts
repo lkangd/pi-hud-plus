@@ -1,11 +1,15 @@
 // Ported from claude-hud src/extra-cmd.ts. Changes for pi: the command comes from config (no --extra-cmd
-// argv parsing) and runs through pi.exec as `sh -c`, since pi.exec doesn't use a shell. No debug logging.
+// argv parsing) and runs through pi.exec as `sh -c`, since pi.exec doesn't use a shell.
+import { createDebug } from "./debug.ts";
 import type { Exec } from "./git.ts";
 import { sanitize as stripControls } from "./sanitize.ts";
 
 const MAX_BUFFER = 10 * 1024; // 10KB - plenty for a label
 const MAX_LABEL_LENGTH = 50;
 const TIMEOUT_MS = 3000;
+
+// Messages never include the command or its output: either may hold secrets.
+const debug = createDebug("extra-cmd");
 
 /**
  * Sanitize output to prevent terminal escape injection.
@@ -30,8 +34,21 @@ export function sanitize(input: string): string {
 export async function runExtraCmd(exec: Exec, cmd: string, timeout: number = TIMEOUT_MS): Promise<string | null> {
   try {
     const { stdout, code, killed } = await exec("sh", ["-c", cmd], { timeout, maxBuffer: MAX_BUFFER });
-    if (code !== 0 || killed) return null;
-    const data: unknown = JSON.parse(stdout.trim());
+    if (killed) {
+      debug(`Command timed out after ${timeout}ms`);
+      return null;
+    }
+    if (code !== 0) {
+      debug(`Command failed with exit code ${code}`);
+      return null;
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(stdout.trim());
+    } catch {
+      debug("Failed to parse JSON output");
+      return null;
+    }
     if (typeof data === "object" && data !== null && "label" in data && typeof data.label === "string") {
       let label = sanitize(data.label);
       if (label.length > MAX_LABEL_LENGTH) {
@@ -39,8 +56,10 @@ export async function runExtraCmd(exec: Exec, cmd: string, timeout: number = TIM
       }
       return label;
     }
+    debug(`Command output missing 'label' field or invalid type`);
     return null;
   } catch {
+    debug("Command failed to run");
     return null;
   }
 }

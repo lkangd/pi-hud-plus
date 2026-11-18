@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createDebug } from "./debug.ts";
 import type { Language } from "./i18n/types.ts";
 
 export type LineLayoutType = "compact" | "expanded";
@@ -360,12 +361,17 @@ export function deepMerge(base: Raw, override: Raw): Raw {
   return merged;
 }
 
+const debug = createDebug("config");
+
 /** Missing, unreadable, unparseable or non-object files count as empty so the HUD still renders. */
 function readJsonObject(file: string): Raw {
   try {
     const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return isObject(parsed) ? parsed : {};
-  } catch {
+    if (isObject(parsed)) return parsed;
+    debug(`Ignoring ${file}: not a JSON object`);
+    return {};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") debug(`Failed to read ${file}:`, error);
     return {};
   }
 }
