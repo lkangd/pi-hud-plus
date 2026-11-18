@@ -14,6 +14,7 @@ import {
 import { hasTickingElement, startClock } from "./clock.ts";
 import { registerCommands } from "./commands.ts";
 import { loadConfig, type HudConfig } from "./config.ts";
+import { getUsageFromExternalSnapshot } from "./external-usage.ts";
 import { runExtraCmd } from "./extra-cmd.ts";
 import { getGitStatus, type GitStatusOptions } from "./git.ts";
 import { getMemoryUsage } from "./memory.ts";
@@ -35,6 +36,8 @@ interface Session {
   speedExpiry?: ReturnType<typeof setTimeout>;
   git?: BackgroundJob;
   extra?: BackgroundJob;
+  /** Re-reads the External usage snapshot. Absent when usage is off or has no externalUsagePath. */
+  readUsage?: () => void;
   footerData?: ReadonlyFooterDataProvider;
   /** Context from the streaming reply's usage; wins over getContextUsage() until a clearing event. */
   liveContext?: HudContext;
@@ -242,9 +245,18 @@ export default function piHud(pi: ExtensionAPI): void {
       tools: new Map(),
       breakdown,
     });
+    if (config.display.showUsage && config.display.externalUsagePath) {
+      // A small sync read, on session_start, agent_end and the clock tick; never in render. Freshness is checked per read.
+      current.readUsage = () => {
+        const usageLimit = getUsageFromExternalSnapshot(config);
+        if (JSON.stringify(usageLimit) !== JSON.stringify(current.snapshot.usageLimit ?? null)) update(current.generation, { usageLimit });
+      };
+      current.readUsage();
+    }
     if (hasTickingElement(config)) {
       current.stopClock = startClock((now) => {
         update(current.generation, { now });
+        current.readUsage?.();
         // Memory is sampled here, never in render; the first reading lands on the first tick.
         if (config.display.showMemoryUsage) void getMemoryUsage().then((memory) => update(current.generation, { memory }));
       });
@@ -398,6 +410,7 @@ export default function piHud(pi: ExtensionAPI): void {
     clearSpeed(s);
     s.git?.trigger();
     s.extra?.trigger();
+    s.readUsage?.();
     clearLiveContext(s, ctx);
   });
   pi.on("session_info_changed", (_event, ctx) => {

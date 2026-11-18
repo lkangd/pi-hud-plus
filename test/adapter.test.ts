@@ -958,3 +958,58 @@ test("with config counts off, pi's commands and tools are never read", async () 
   await emit("before_agent_start", { prompt: "hi", systemPrompt: "", systemPromptOptions: { cwd: ctx.cwd } }, ctx);
   assert.deepEqual(footer()!.render(80).map(strip), ["[Claude Opus 4.6] │ my-project"]);
 });
+
+// ---- External usage snapshot ----
+
+/** A cwd whose config points externalUsagePath at a file; write(percent) rewrites the snapshot, stamped now. */
+function usageSetup(display: object = {}) {
+  const file = join(mkdtempSync(join(tmpdir(), "pi-hud-usage-")), "usage.json");
+  const write = (percent: number) => writeFileSync(file, JSON.stringify({ updated_at: Date.now(), five_hour: { used_percentage: percent } }));
+  const cwd = projectWith({ showModel: false, showProject: false, usageBarEnabled: false, externalUsagePath: file, ...display });
+  return { cwd, write };
+}
+
+test("the External usage snapshot is read on session_start and agent_end, never in render", async () => {
+  mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 3, 20, 12) });
+  const { cwd, write } = usageSetup();
+  write(42);
+  const { emit } = fakePi();
+  const { ctx, footer } = fakeCtx({ cwd });
+  await emit("session_start", { reason: "startup" }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Usage 5h 42%"]);
+
+  write(60);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Usage 5h 42%"], "render doesn't read");
+  await emit("agent_end", { messages: [] }, ctx);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Usage 5h 60%"]);
+});
+
+test("the clock tick re-reads the External usage snapshot, so a stale one disappears", async () => {
+  mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.UTC(2026, 3, 20, 12) });
+  const { cwd, write } = usageSetup({ externalUsageFreshnessMs: 2000 });
+  write(42);
+  const { emit } = fakePi();
+  const { ctx, footer } = fakeCtx({ cwd });
+  await emit("session_start", { reason: "startup" }, ctx);
+  mock.timers.tick(2000);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Usage 5h 42%"]);
+  mock.timers.tick(1000);
+  assert.deepEqual(footer()!.render(80), []);
+  write(70);
+  mock.timers.tick(1000);
+  assert.deepEqual(footer()!.render(80).map(strip), ["Usage 5h 70%"]);
+});
+
+test("with showUsage off, no snapshot is read and no clock runs", async () => {
+  mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.UTC(2026, 3, 20, 12) });
+  const { cwd, write } = usageSetup({ showUsage: false });
+  write(42);
+  const { emit } = fakePi();
+  const { ctx, tui, footer } = fakeCtx({ cwd });
+  await emit("session_start", { reason: "startup" }, ctx);
+  await emit("agent_end", { messages: [] }, ctx);
+  const renders = tui.renders;
+  mock.timers.tick(5000);
+  assert.deepEqual(footer()!.render(80), []);
+  assert.equal(tui.renders, renders, "no clock");
+});
