@@ -33,7 +33,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx 'test/*.test.ts'",
-    "prepublishOnly": "npm run typecheck && npm test"
+    "prepublishOnly": "npm run typecheck && npm test",
+    "release": "release-it"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -42,7 +43,9 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.5.2",
     "@earendil-works/pi-tui": "^1.5.2",
+    "@release-it/conventional-changelog": "^12.0.2",
     "@types/node": "^22.20.5",
+    "release-it": "^21.1.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
   }
