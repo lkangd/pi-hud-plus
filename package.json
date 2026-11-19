@@ -1,6 +1,6 @@
 {
   "name": "pi-hud-plus",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A claude-hud-style HUD for pi's footer",
   "type": "module",
   "license": "MIT",

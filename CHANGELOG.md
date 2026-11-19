@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.3.1](https://github.com/lkangd/pi-hud-plus/compare/v0.3.0...v0.3.1) (2026-11-19)
+
 ## [0.3.0] - 2026-11-18
 
 ### New Features
