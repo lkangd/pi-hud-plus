@@ -1,10 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-11-18
 
 ### New Features
 
 - **Usage limits**: the `usage` Element is back, with claude-hud's config fields. It shows 5h, Weekly and Monthly Limit windows for Codex (ChatGPT) and GLM Coding Plan models, and a Balance for DeepSeek models. The HUD fetches these from each vendor with pi's credentials. Other vendors can feed it through claude-hud's External usage snapshot file (`display.externalUsagePath`). The Element is on by default and sits beside the context bar. To stop the requests, set `display.showUsage` to `false` or turn off the new "Usage limits" row in `/pi-hud:configure`.
+- **Git files Line**: with `gitStatus.showFileStats`, the expanded layout ends with up to 6 changed files, newest first, each linked when inside the project. The branch name links to its GitHub tree page.
+- **Debug logging**: start pi with `DEBUG=pi-hud-plus` to log why the Extra command, a Usage limit request or the config file failed, to `~/.pi/agent/pi-hud-plus-debug.log`.
+
+### Bug Fixes
+
+- **Speed**: the output speed now hides when a reply stalls for more than 2 seconds, as in claude-hud, instead of staying until the reply ends.
 
 ## [0.2.0] - 2026-11-17
 
